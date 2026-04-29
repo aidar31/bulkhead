@@ -5,12 +5,20 @@ defmodule Bulkhead.Application do
 
   @impl true
   def start(_type, _args) do
+    bot_opts = %{
+      name: BulkheadBot,
+      consumer: BulkheadBot.Consumer,
+      intents: [:guilds, :guild_messages, :message_content],
+      wrapped_token: fn -> Application.get_env(:bulkhead, :bot_token) end
+    }
+
     children = [
       BulkheadWeb.Telemetry,
       Bulkhead.Repo,
       {DNSCluster, query: Application.get_env(:bulkhead, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Bulkhead.PubSub},
-      BulkheadWeb.Endpoint
+      BulkheadWeb.Endpoint,
+      {Nostrum.Bot, bot_opts}
     ]
 
     opts = [strategy: :one_for_one, name: Bulkhead.Supervisor]
