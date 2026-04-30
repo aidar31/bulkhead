@@ -14,10 +14,14 @@ defmodule Bulkhead.Application do
 
     children = [
       BulkheadWeb.Telemetry,
+      {Registry, keys: :unique, name: Bulkhead.Registry},
       Bulkhead.Repo,
       {DNSCluster, query: Application.get_env(:bulkhead, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Bulkhead.PubSub},
       BulkheadWeb.Endpoint,
+      # Game
+      Bulkhead.Game.Supervisor,
+      # Bot
       {Nostrum.Bot, bot_opts}
     ]
 
