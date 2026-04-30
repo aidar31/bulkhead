@@ -32,7 +32,8 @@ defmodule Bulkhead.Mission.Server do
       # стейт конкретной миссии
       mission_state: mission_state,
       # :traveling | :event | :complete | :failed
-      status: :traveling
+      status: :traveling,
+      last_activity: DateTime.utc_now()
     }
 
     schedule_tick(module.tick_interval())
@@ -49,34 +50,46 @@ defmodule Bulkhead.Mission.Server do
   end
 
   def handle_info(:tick, state) do
-    case state.module.tick(state.mission_state) do
-      {:continue, new_mission_state} ->
-        new_state = %{state | mission_state: new_mission_state}
-        update_display(new_state)
-        schedule_tick(state.module.tick_interval())
-        {:noreply, new_state}
+    if activity_expired?(state.last_activity) do
+      fail_mission(state, :timeout)
+      {:stop, :normal, state}
+    else
+      case state.module.tick(state.mission_state) do
+        {:continue, new_mission_state} ->
+          new_state = %{state | mission_state: new_mission_state}
+          update_display(new_state)
+          schedule_tick(state.module.tick_interval())
+          {:noreply, new_state}
 
-      {:event, event, new_mission_state} ->
-        new_state = %{state | mission_state: new_mission_state, status: :event}
-        show_event(new_state, event)
-        schedule_tick(state.module.tick_interval())
-        {:noreply, new_state}
+        {:event, event, new_mission_state} ->
+          new_state = %{state | mission_state: new_mission_state, status: :event}
+          show_event(new_state, event)
+          schedule_tick(state.module.tick_interval())
+          {:noreply, new_state}
 
-      {:complete, rewards, new_mission_state} ->
-        new_state = %{state | mission_state: new_mission_state, status: :complete}
-        finish_mission(new_state, rewards)
-        {:stop, :normal, new_state}
+        {:complete, rewards, new_mission_state} ->
+          new_state = %{state | mission_state: new_mission_state, status: :complete}
+          finish_mission(new_state, rewards)
+          {:stop, :normal, new_state}
 
-      {:failed, reason, new_mission_state} ->
-        new_state = %{state | mission_state: new_mission_state, status: :failed}
-        fail_mission(new_state, reason)
-        {:stop, :normal, new_state}
+        {:failed, reason, new_mission_state} ->
+          new_state = %{state | mission_state: new_mission_state, status: :failed}
+          fail_mission(new_state, reason)
+          {:stop, :normal, new_state}
+      end
     end
   end
 
   def handle_cast({:action, action}, %{status: :event} = state) do
     new_mission_state = state.module.handle_action(action, state.mission_state)
-    new_state = %{state | mission_state: new_mission_state, status: :traveling}
+
+    new_state = %{
+      state
+      | mission_state: new_mission_state,
+        status: :traveling,
+        last_activity: DateTime.utc_now()
+    }
+
     update_display(new_state)
     {:noreply, new_state}
   end
@@ -116,10 +129,17 @@ defmodule Bulkhead.Mission.Server do
   end
 
   defp finish_mission(state, rewards) do
-    # Уведомляем Station
-    send(state.station_pid, {:mission_complete, rewards, self()})
+    # Уведомляем Station с данными о корабле
+    send(state.station_pid, {
+      :mission_complete,
+      rewards,
+      %{
+        ship_id: state.mission_state.ship_id,
+        final_hull: state.mission_state.hull
+      },
+      self()
+    })
 
-    # Финальный embed
     Nostrum.Api.Interaction.edit_response(state.token, %{
       embeds: [
         %{
@@ -133,7 +153,12 @@ defmodule Bulkhead.Mission.Server do
   end
 
   defp fail_mission(state, reason) do
-    send(state.station_pid, {:mission_failed, reason, self()})
+    send(state.station_pid, {
+      :mission_failed,
+      reason,
+      %{ship_id: state.mission_state.ship_id, final_hull: 0},
+      self()
+    })
 
     Nostrum.Api.Interaction.edit_response(state.token, %{
       embeds: [
@@ -160,6 +185,10 @@ defmodule Bulkhead.Mission.Server do
       end)
 
     [%{type: 1, components: buttons}]
+  end
+
+  defp activity_expired?(last_time) do
+    DateTime.diff(DateTime.utc_now(), last_time) > 300
   end
 
   defp rewards_to_fields(rewards) do

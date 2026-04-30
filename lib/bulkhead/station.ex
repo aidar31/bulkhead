@@ -2,6 +2,8 @@ defmodule Bulkhead.Station do
   use GenServer, restart: :transient
   require Logger
 
+  alias Bulkhead.Hangar
+
   def start_link(args) do
     guild_id = Keyword.fetch!(args, :guild_id)
     GenServer.start_link(__MODULE__, args, name: via(guild_id))
@@ -30,6 +32,8 @@ defmodule Bulkhead.Station do
     state = default_state(guild_id)
 
     {:ok, mission_sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    {:ok, hangar_pid} = Bulkhead.Hangar.start_link(guild_id: guild_id)
 
     schedule_tick()
     schedule_persist()
@@ -101,70 +105,87 @@ defmodule Bulkhead.Station do
   #       {:reply, {:error, reason}, state}
   #   end
   # end
-
   def handle_call({:start_mission, %{type: :expedition} = args}, _from, state) do
-    with {:ok, ship} <- get_available_ship(state.guild_id),
-         {:ok, hangar} <- get_hangar(state.guild_id) do
-      mission_args =
-        Map.merge(args, %{
-          ship_id: ship.id,
-          # Характеристики корабля идут в миссию
-          ship_stats: ship.stats,
-          ship_hull: ship.current_hull,
-          hangar_level: hangar.level,
-          station_pid: self()
-        })
+    # Прямое обращение к процессу Ангара в памяти
+    case Hangar.get_available_ships(state.guild_id) do
+      [ship | _] ->
+        with {:ok, building} <- get_hangar_info(state.guild_id) do
+          mission_args =
+            Map.merge(args, %{
+              ship_id: ship.id,
+              ship_stats: ship.stats,
+              ship_hull: ship.current_hull,
+              hangar_level: building.level,
+              station_pid: self()
+            })
 
-      case DynamicSupervisor.start_child(
-             state.mission_sup,
-             {Bulkhead.Mission.Server, mission_args}
-           ) do
-        {:ok, pid} ->
-          # Помечаем корабль занятым
-          Bulkhead.Station.Store.set_ship_on_mission(ship.id)
+          case DynamicSupervisor.start_child(
+                 state.mission_sup,
+                 {Bulkhead.Mission.Server, mission_args}
+               ) do
+            {:ok, pid} ->
+              Bulkhead.Station.Store.set_ship_on_mission(ship.id)
+              Hangar.set_ship_on_mission(state.guild_id, ship.id)
 
-          new_state = %{
-            state
-            | active_missions: MapSet.put(state.active_missions, pid),
-              dirty: true
-          }
+              new_state = %{
+                state
+                | active_missions: MapSet.put(state.active_missions, pid),
+                  dirty: true
+              }
 
-          {:reply, {:ok, pid}, new_state}
+              {:reply, {:ok, pid}, new_state}
 
-        {:error, reason} ->
-          {:reply, {:error, reason}, state}
-      end
-    else
-      {:error, :no_ships_available} ->
+            {:error, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+        else
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+
+      [] ->
         {:reply, {:error, :no_ships_available}, state}
     end
   end
 
-  defp get_available_ship(guild_id) do
-    case Bulkhead.Station.Store.get_available_ships(guild_id) do
-      [] -> {:error, :no_ships_available}
-      [ship | _] -> {:ok, ship}
-    end
-  end
-
-  defp get_hangar(guild_id) do
-    case Bulkhead.Station.Store.get_building(guild_id, "hangar") do
-      nil -> {:error, :no_hangar}
-      hangar -> {:ok, hangar}
-    end
-  end
-
-  def handle_info({:mission_complete, rewards, _pid}, state) do
+  def handle_info(
+        {:mission_complete, rewards, %{ship_id: ship_id, final_hull: hull}, _pid},
+        state
+      ) do
     new_resources =
       state.resources
-      |> Map.update!(:credits, &(&1 + Map.get(rewards, :credits, 0)))
-      |> Map.update!(:scrap, &(&1 + Map.get(rewards, :scrap, 0)))
+      |> Map.update("scrap", 0, &(&1 + Map.get(rewards, :scrap, 0)))
+
+    Bulkhead.Station.Store.update_ship_hull(ship_id, hull)
+
+    with {:ok, building} <- get_hangar_info(state.guild_id) do
+      recovery_sec = trunc(300 / building.level)
+      Hangar.start_recovery(state.guild_id, ship_id, recovery_sec)
+    end
+
+    Phoenix.PubSub.broadcast(Bulkhead.PubSub, "galaxy:events", {
+      :mission_complete,
+      %{guild_id: state.guild_id, rewards: rewards}
+    })
 
     {:noreply, %{state | resources: new_resources, dirty: true}}
   end
 
-  def handle_info({:mission_failed, reason, _pid}, state) do
-    Logger.info("Mission failed for station #{state.guild_id}: #{reason}")
+  defp get_hangar_info(guild_id) do
+    case Bulkhead.Station.Store.get_building(guild_id, "hangar") do
+      nil -> {:error, :no_hangar}
+      b -> {:ok, b}
+    end
+  end
+
+  def handle_info({:mission_failed, _reason, %{ship_id: ship_id}, _pid}, state) do
+    with {:ok, building} <- get_hangar_info(state.guild_id) do
+      # Формула: 5 минут (300с) база, делится на уровень ангара
+      recovery_sec = trunc(300 / building.level * 2)
+      Hangar.start_recovery(state.guild_id, ship_id, recovery_sec)
+    end
+
+    Bulkhead.Station.Store.update_ship_hull(ship_id, 20)
+
     {:noreply, state}
   end
 

@@ -23,6 +23,14 @@ defmodule Bulkhead.Station.Store do
   end
 
   # Корабли
+  def get_all_ships(guild_id) do
+    Repo.all(
+      from s in Game.Ship,
+        where: s.guild_id == ^guild_id,
+        order_by: [asc: s.id]
+    )
+  end
+
   def get_available_ships(guild_id) do
     now = DateTime.utc_now()
 
@@ -35,6 +43,17 @@ defmodule Bulkhead.Station.Store do
     )
   end
 
+  def set_ship_idle(ship_id) do
+    Repo.update_all(
+      from(s in Game.Ship, where: s.id == ^ship_id),
+      set: [
+        status: "idle",
+        available_at: nil,
+        updated_at: DateTime.utc_now()
+      ]
+    )
+  end
+
   def set_ship_on_mission(ship_id) do
     Repo.update_all(
       from(s in Game.Ship, where: s.id == ^ship_id),
@@ -42,20 +61,20 @@ defmodule Bulkhead.Station.Store do
     )
   end
 
-  def set_ship_recovering(ship_id, hangar_level) do
-    # Уровень ангара влияет на время восстановления
-    recovery_minutes = max(1, 5 - hangar_level)
-    available_at = DateTime.add(DateTime.utc_now(), recovery_minutes * 60, :second)
+  # def set_ship_recovering(ship_id, hangar_level) do
+  #   # Уровень ангара влияет на время восстановления
+  #   recovery_minutes = max(1, 5 - hangar_level)
+  #   available_at = DateTime.add(DateTime.utc_now(), recovery_minutes * 60, :second)
 
-    Repo.update_all(
-      from(s in Game.Ship, where: s.id == ^ship_id),
-      set: [
-        status: "recovering",
-        available_at: available_at,
-        updated_at: DateTime.utc_now()
-      ]
-    )
-  end
+  #   Repo.update_all(
+  #     from(s in Game.Ship, where: s.id == ^ship_id),
+  #     set: [
+  #       status: "recovering",
+  #       available_at: available_at,
+  #       updated_at: DateTime.utc_now()
+  #     ]
+  #   )
+  # end
 
   def update_ship_hull(ship_id, new_hull) do
     Repo.update_all(
@@ -95,6 +114,17 @@ defmodule Bulkhead.Station.Store do
       {:ok, station} -> station
       {:error, reason} -> raise "Failed to create station: #{inspect(reason)}"
     end
+  end
+
+  def set_ship_recovering(ship_id, available_at) do
+    Repo.update_all(
+      from(s in Bulkhead.Game.Ship, where: s.id == ^ship_id),
+      set: [
+        status: "recovering",
+        available_at: available_at,
+        updated_at: DateTime.utc_now()
+      ]
+    )
   end
 
   defp ensure_resource_defaults(station) do

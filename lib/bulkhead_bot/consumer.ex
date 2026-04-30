@@ -10,6 +10,11 @@ defmodule BulkheadBot.Consumer do
     IO.puts("🚀 Бот готов и команды зарегистрированы!")
   end
 
+  def handle_event({:GUILD_AVAILABLE, guild, _ws}) do
+    register_commands(guild.id)
+    IO.puts("✅ Команды синхронизированы для сервера: #{guild.id}")
+  end
+
   def handle_event({:INTERACTION_CREATE, interaction, _ws}) do
     case interaction.type do
       2 -> route_command(interaction)
@@ -23,6 +28,11 @@ defmodule BulkheadBot.Consumer do
   defp route_command(%Interaction{data: %{name: "ping"}} = interaction) do
     Nostrum.Api.Interaction.create_response(interaction, %{type: 5})
     BulkheadBot.Commands.Ping.execute(interaction)
+  end
+
+  defp route_command(%Interaction{data: %{name: "hangar"}} = interaction) do
+    Nostrum.Api.Interaction.create_response(interaction, %{type: 5})
+    BulkheadBot.Commands.Hangar.execute(interaction)
   end
 
   defp route_command(%Interaction{data: %{name: "start_mission", options: options}} = interaction) do
@@ -65,6 +75,10 @@ defmodule BulkheadBot.Consumer do
       %{
         name: "ping",
         description: "Проверить связь с ботом"
+      },
+      %{
+        name: "hangar",
+        description: "Посмотреть список кораблей и их состояние"
       },
       %{
         name: "start_mission",

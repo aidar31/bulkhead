@@ -34,18 +34,17 @@ defmodule Bulkhead.Mission.Expedition do
 
   @impl true
   def tick(state) do
-    base_speed = 10
-
+    # Скорость теперь из стейта, не хардкод
     penalty =
       cond do
-        state.hull <= 25 -> 7
-        state.hull <= 50 -> 4
+        state.hull <= trunc(state.hull_max * 0.25) -> 7
+        state.hull <= trunc(state.hull_max * 0.50) -> 4
         true -> 0
       end
 
-    speed = base_speed - penalty
-
+    speed = max(1, state.base_speed - penalty)
     new_pos = state.current_pos + speed
+
     passive_damage = if :rand.uniform(100) <= 20, do: :rand.uniform(5) + 1, else: 0
     new_hull = state.hull - passive_damage
 
@@ -57,25 +56,15 @@ defmodule Bulkhead.Mission.Expedition do
         rewards = %{scrap: state.scrap_collected}
         {:complete, rewards, %{state | current_pos: new_pos}}
 
-      state.hull <= 0 ->
-        {:failed, :hull_destroyed, state}
-
       :rand.uniform(100) <= 45 ->
         event = random_event(state)
-        {:event, event, %{state | current_pos: new_pos}}
+        {:event, event, %{state | current_pos: new_pos, hull: new_hull}}
 
       true ->
-        # Небольшой пассивный износ корпуса в глубоком космосе (шанс 15%)
-        wear_and_tear = if :rand.uniform(100) <= 15, do: 2, else: 0
-        new_hull = state.hull - wear_and_tear
+        wear = if :rand.uniform(100) <= 15, do: 2, else: 0
+        log = if wear > 0, do: "☢️ Радиационный фон повышен.", else: random_log()
 
-        log =
-          if wear_and_tear > 0,
-            do: "☢️ Радиационный фон повышен, корпус изнашивается.",
-            else: random_log()
-
-        new_state = %{state | current_pos: new_pos, hull: new_hull, last_log: log}
-        {:continue, new_state}
+        {:continue, %{state | current_pos: new_pos, hull: new_hull - wear, last_log: log}}
     end
   end
 
@@ -101,12 +90,16 @@ defmodule Bulkhead.Mission.Expedition do
 
   @impl true
   def render(state) do
+    hull_pct = round(state.hull / state.hull_max * 100)
+
     hull_icon =
       cond do
-        state.hull > 70 -> "🟢"
-        state.hull > 30 -> "🟡"
+        hull_pct > 70 -> "🟢"
+        hull_pct > 30 -> "🟡"
         true -> "🔴"
       end
+
+    speed = max(1, state.base_speed - speed_penalty(state))
 
     main_display = """
     ```ml
@@ -119,10 +112,18 @@ defmodule Bulkhead.Mission.Expedition do
     %{
       title: "#{hull_icon} Экспедиция: Дальний Космос",
       description: main_display,
-      color: state_color(state.hull),
+      color: state_color(hull_pct),
       fields: [
-        %{name: "🛡️ Корпус", value: "```fix\n#{state.hull}%```", inline: true},
-        %{name: "📦 Скрап", value: "```fix\n#{state.scrap_collected}```", inline: true},
+        %{
+          name: "🛡️ Корпус",
+          value: "```fix\n#{state.hull} / #{state.hull_max}```",
+          inline: true
+        },
+        %{
+          name: "📦 Скрап",
+          value: "```fix\n#{state.scrap_collected} / #{state.cargo_capacity}```",
+          inline: true
+        },
         %{
           name: "🛰️ Координаты",
           value: "```fix\n#{state.current_pos} / #{state.distance}```",
@@ -131,9 +132,19 @@ defmodule Bulkhead.Mission.Expedition do
         %{name: "⠀", value: "───────────────", inline: false}
       ],
       footer: %{
-        text: "Система жизнеобеспечения активна • Скорость: #{calculate_speed(state)} а.е./т"
+        text: "Скорость: #{speed} а.е./т • Корабль ##{state.ship_id}"
       }
     }
+  end
+
+  defp speed_penalty(state) do
+    hull_pct = round(state.hull / state.hull_max * 100)
+
+    cond do
+      hull_pct <= 25 -> 7
+      hull_pct <= 50 -> 4
+      true -> 0
+    end
   end
 
   defp state_color(hull) do
