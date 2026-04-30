@@ -17,6 +17,13 @@ defmodule Bulkhead.Station do
     end
   end
 
+  def get_status(guild_id) do
+    case Bulkhead.Station.Cache.get(guild_id) do
+      {:ok, state} -> {:ok, state}
+      {:error, :not_found} -> {:ok, GenServer.call(via(guild_id), :get_status)}
+    end
+  end
+
   def init(args) do
     guild_id = Keyword.fetch!(args, :guild_id)
 
@@ -26,21 +33,47 @@ defmodule Bulkhead.Station do
 
     schedule_tick()
     schedule_persist()
-    {:ok, Map.put(state, :mission_sup, mission_sup)}
+    {:ok, Map.put(state, :mission_sup, mission_sup), {:continue, :load_state}}
+  end
+
+  def handle_continue(:load_state, state) do
+    record = Bulkhead.Station.Store.load_or_create(state.guild_id)
+
+    resources = %{
+      credits: record.resources["credits"] || 100,
+      scrap: record.resources["scrap"] || 50,
+      energy: record.resources["energy"] || 100,
+      mining_level: record.resources["mining_level"] || 1
+    }
+
+    new_state = %{
+      state
+      | resources: resources,
+        metadata: record.metadata,
+        loaded: true
+    }
+
+    {:noreply, new_state}
+  end
+
+  def handle_call(:get_status, _from, state) do
+    {:reply, state, state}
   end
 
   def handle_info(:tick, state) do
-    earned = state.mining_level * 2
-    new_state = %{state | credits: state.credits + earned, dirty: true}
+    earned = state.resources.mining_level * 2
+    new_resources = %{state.resources | credits: state.resources.credits + earned}
+    new_state = %{state | resources: new_resources, dirty: true}
 
     Phoenix.PubSub.broadcast(
       Bulkhead.PubSub,
       "station:#{state.guild_id}",
-      {:tick, %{earned: earned, credits: new_state.credits, scrap: new_state.scrap}}
+      {:tick,
+       %{earned: earned, credits: new_state.resources.credits, scrap: new_state.resources.scrap}}
     )
 
     Logger.info(
-      "Station #{state.guild_id} tick: earned #{earned} credits, total credits: #{new_state.credits}"
+      "Station #{state.guild_id} tick: earned #{earned} credits, total credits: #{new_state.resources.credits}"
     )
 
     schedule_tick()
@@ -49,31 +82,85 @@ defmodule Bulkhead.Station do
 
   # Missions
 
-  def handle_call({:start_mission, mission_args}, _from, state) do
-    mission_id = :crypto.strong_rand_bytes(8) |> Base.encode16()
-    mission_args = Map.put(mission_args, :mission_id, mission_id)
+  # def handle_call({:start_mission, mission_args}, _from, state) do
+  #   mission_id = :crypto.strong_rand_bytes(8) |> Base.encode16()
+  #   mission_args = Map.put(mission_args, :mission_id, mission_id)
 
-    case DynamicSupervisor.start_child(state.mission_sup, {Bulkhead.Mission.Server, mission_args}) do
-      {:ok, pid} ->
-        new_state = %{
-          state
-          | active_missions: MapSet.put(state.active_missions, pid),
-            dirty: true
-        }
+  #   case DynamicSupervisor.start_child(state.mission_sup, {Bulkhead.Mission.Server, mission_args}) do
+  #     {:ok, pid} ->
+  #       new_state = %{
+  #         state
+  #         | active_missions: MapSet.put(state.active_missions, pid),
+  #           dirty: true
+  #       }
 
-        {:reply, {:ok, mission_id}, new_state}
+  #       {:reply, {:ok, mission_id}, new_state}
 
-      {:error, reason} ->
-        Logger.error("Failed to start mission for station #{state.guild_id}: #{inspect(reason)}")
-        {:reply, {:error, reason}, state}
+  #     {:error, reason} ->
+  #       Logger.error("Failed to start mission for station #{state.guild_id}: #{inspect(reason)}")
+  #       {:reply, {:error, reason}, state}
+  #   end
+  # end
+
+  def handle_call({:start_mission, %{type: :expedition} = args}, _from, state) do
+    with {:ok, ship} <- get_available_ship(state.guild_id),
+         {:ok, hangar} <- get_hangar(state.guild_id) do
+      mission_args =
+        Map.merge(args, %{
+          ship_id: ship.id,
+          # Характеристики корабля идут в миссию
+          ship_stats: ship.stats,
+          ship_hull: ship.current_hull,
+          hangar_level: hangar.level,
+          station_pid: self()
+        })
+
+      case DynamicSupervisor.start_child(
+             state.mission_sup,
+             {Bulkhead.Mission.Server, mission_args}
+           ) do
+        {:ok, pid} ->
+          # Помечаем корабль занятым
+          Bulkhead.Station.Store.set_ship_on_mission(ship.id)
+
+          new_state = %{
+            state
+            | active_missions: MapSet.put(state.active_missions, pid),
+              dirty: true
+          }
+
+          {:reply, {:ok, pid}, new_state}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
+    else
+      {:error, :no_ships_available} ->
+        {:reply, {:error, :no_ships_available}, state}
+    end
+  end
+
+  defp get_available_ship(guild_id) do
+    case Bulkhead.Station.Store.get_available_ships(guild_id) do
+      [] -> {:error, :no_ships_available}
+      [ship | _] -> {:ok, ship}
+    end
+  end
+
+  defp get_hangar(guild_id) do
+    case Bulkhead.Station.Store.get_building(guild_id, "hangar") do
+      nil -> {:error, :no_hangar}
+      hangar -> {:ok, hangar}
     end
   end
 
   def handle_info({:mission_complete, rewards, _pid}, state) do
-    new_credits = state.credits + Map.get(rewards, :credits, 0)
-    new_scrap = state.scrap + Map.get(rewards, :scrap, 0)
+    new_resources =
+      state.resources
+      |> Map.update!(:credits, &(&1 + Map.get(rewards, :credits, 0)))
+      |> Map.update!(:scrap, &(&1 + Map.get(rewards, :scrap, 0)))
 
-    {:noreply, %{state | credits: new_credits, scrap: new_scrap, dirty: true}}
+    {:noreply, %{state | resources: new_resources, dirty: true}}
   end
 
   def handle_info({:mission_failed, reason, _pid}, state) do
@@ -89,9 +176,10 @@ defmodule Bulkhead.Station do
   end
 
   def handle_info(:persist, state) do
-    # Save to DB if dirty
-    # TODO: implement actual persistence
-    # Cache.put({:station, state.guild_id}, state)
+    if state.dirty do
+      Bulkhead.Station.Store.save(state.guild_id, state.resources, state.metadata)
+    end
+
     Logger.debug("Persisting station #{state.guild_id} state: #{inspect(state)}")
     schedule_persist()
     {:noreply, %{state | dirty: false}}
@@ -100,12 +188,11 @@ defmodule Bulkhead.Station do
   defp default_state(guild_id) do
     %{
       guild_id: guild_id,
-      credits: 100,
-      scrap: 50,
-      energy: 100,
-      mining_level: 1,
+      resources: %{},
+      metadata: %{},
       active_missions: MapSet.new(),
       active_event: nil,
+      loaded: false,
       dirty: false
     }
   end

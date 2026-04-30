@@ -10,6 +10,6 @@ defmodule Bulkhead.Game.Supervisor do
       Bulkhead.Station.Supervisor
     ]
 
-    Supervisor.init(children, strategy: :one_for_all)
+    Supervisor.init(children, strategy: :one_for_one)
   end
 end
