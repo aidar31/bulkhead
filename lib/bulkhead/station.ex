@@ -20,10 +20,7 @@ defmodule Bulkhead.Station do
   end
 
   def get_status(guild_id) do
-    case Bulkhead.Station.Cache.get(guild_id) do
-      {:ok, state} -> {:ok, state}
-      {:error, :not_found} -> {:ok, GenServer.call(via(guild_id), :get_status)}
-    end
+    GenServer.call(via(guild_id), :get_status)
   end
 
   def init(args) do
@@ -31,13 +28,9 @@ defmodule Bulkhead.Station do
 
     state = default_state(guild_id)
 
-    {:ok, mission_sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
-
-    {:ok, hangar_pid} = Bulkhead.Hangar.start_link(guild_id: guild_id)
-
     schedule_tick()
     schedule_persist()
-    {:ok, Map.put(state, :mission_sup, mission_sup), {:continue, :load_state}}
+    {:ok, state, {:continue, :load_state}}
   end
 
   def handle_continue(:load_state, state) do
@@ -60,10 +53,6 @@ defmodule Bulkhead.Station do
     {:noreply, new_state}
   end
 
-  def handle_call(:get_status, _from, state) do
-    {:reply, state, state}
-  end
-
   def handle_info(:tick, state) do
     earned = state.resources.mining_level * 2
     new_resources = %{state.resources | credits: state.resources.credits + earned}
@@ -84,62 +73,43 @@ defmodule Bulkhead.Station do
     {:noreply, new_state}
   end
 
+  def handle_call(:get_status, _from, state) do
+    {:reply, state, state}
+  end
+
   # Missions
-
-  # def handle_call({:start_mission, mission_args}, _from, state) do
-  #   mission_id = :crypto.strong_rand_bytes(8) |> Base.encode16()
-  #   mission_args = Map.put(mission_args, :mission_id, mission_id)
-
-  #   case DynamicSupervisor.start_child(state.mission_sup, {Bulkhead.Mission.Server, mission_args}) do
-  #     {:ok, pid} ->
-  #       new_state = %{
-  #         state
-  #         | active_missions: MapSet.put(state.active_missions, pid),
-  #           dirty: true
-  #       }
-
-  #       {:reply, {:ok, mission_id}, new_state}
-
-  #     {:error, reason} ->
-  #       Logger.error("Failed to start mission for station #{state.guild_id}: #{inspect(reason)}")
-  #       {:reply, {:error, reason}, state}
-  #   end
-  # end
   def handle_call({:start_mission, %{type: :expedition} = args}, _from, state) do
-    # Прямое обращение к процессу Ангара в памяти
     case Hangar.get_available_ships(state.guild_id) do
       [ship | _] ->
-        with {:ok, building} <- get_hangar_info(state.guild_id) do
-          mission_args =
-            Map.merge(args, %{
-              ship_id: ship.id,
-              ship_stats: ship.stats,
-              ship_hull: ship.current_hull,
-              hangar_level: building.level,
-              station_pid: self()
-            })
+        case Hangar.set_ship_on_mission(state.guild_id, ship.id) do
+          :ok ->
+            mission_args =
+              Map.merge(args, %{
+                ship_id: ship.id,
+                ship_stats: ship.stats,
+                ship_hull: ship.current_hull,
+                station_pid: self()
+              })
 
-          case DynamicSupervisor.start_child(
-                 state.mission_sup,
-                 {Bulkhead.Mission.Server, mission_args}
-               ) do
-            {:ok, pid} ->
-              Bulkhead.Station.Store.set_ship_on_mission(ship.id)
-              Hangar.set_ship_on_mission(state.guild_id, ship.id)
+            case DynamicSupervisor.start_child(
+                   get_mission_sup(state.guild_id),
+                   {Bulkhead.Mission.Server, mission_args}
+                 ) do
+              {:ok, pid} ->
+                new_state = %{
+                  state
+                  | active_missions: MapSet.put(state.active_missions, pid),
+                    dirty: true
+                }
 
-              new_state = %{
-                state
-                | active_missions: MapSet.put(state.active_missions, pid),
-                  dirty: true
-              }
+                {:reply, {:ok, pid}, new_state}
 
-              {:reply, {:ok, pid}, new_state}
+              {:error, reason} ->
+                {:reply, {:error, reason}, state}
+            end
 
-            {:error, reason} ->
-              {:reply, {:error, reason}, state}
-          end
-        else
-          {:error, reason} -> {:reply, {:error, reason}, state}
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
         end
 
       [] ->
@@ -155,12 +125,7 @@ defmodule Bulkhead.Station do
       state.resources
       |> Map.update("scrap", 0, &(&1 + Map.get(rewards, :scrap, 0)))
 
-    Bulkhead.Station.Store.update_ship_hull(ship_id, hull)
-
-    with {:ok, building} <- get_hangar_info(state.guild_id) do
-      recovery_sec = trunc(300 / building.level)
-      Hangar.start_recovery(state.guild_id, ship_id, recovery_sec)
-    end
+    Hangar.start_recovery(state.guild_id, ship_id)
 
     Phoenix.PubSub.broadcast(Bulkhead.PubSub, "galaxy:events", {
       :mission_complete,
@@ -181,7 +146,7 @@ defmodule Bulkhead.Station do
     with {:ok, building} <- get_hangar_info(state.guild_id) do
       # Формула: 5 минут (300с) база, делится на уровень ангара
       recovery_sec = trunc(300 / building.level * 2)
-      Hangar.start_recovery(state.guild_id, ship_id, recovery_sec)
+      Hangar.start_recovery(state.guild_id, ship_id)
     end
 
     Bulkhead.Station.Store.update_ship_hull(ship_id, 20)
@@ -205,6 +170,10 @@ defmodule Bulkhead.Station do
     schedule_persist()
     {:noreply, %{state | dirty: false}}
   end
+
+  # Helpers
+  defp get_mission_sup(guild_id),
+    do: {:via, Registry, {Bulkhead.Registry, {:mission_sup, guild_id}}}
 
   defp default_state(guild_id) do
     %{

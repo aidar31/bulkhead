@@ -11,8 +11,23 @@ defmodule Bulkhead.Station.Supervisor do
   end
 
   def start_station(guild_id) do
-    spec = {Bulkhead.Station, guild_id: guild_id}
+    spec = {Bulkhead.Station.GuildSupervisor, guild_id: guild_id}
     DynamicSupervisor.start_child(__MODULE__, spec)
+  end
+
+  def start_guild_services(guild_id) do
+    spec = {Bulkhead.Station.GuildSupervisor, guild_id: guild_id}
+
+    case DynamicSupervisor.start_child(__MODULE__, spec) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        {:ok, pid}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   def stop_station(guild_id) do
