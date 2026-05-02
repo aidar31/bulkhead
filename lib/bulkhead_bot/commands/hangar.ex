@@ -54,6 +54,7 @@ defmodule BulkheadBot.Commands.Hangar do
       "on_mission" -> "🚀 На задании"
       "idle" -> "✅ Готов"
       "recovering" -> format_recovery_time(ship.available_at)
+      "idle" -> "✅ Готов"
       _ -> "❔ Неизвестно"
     end
   end
