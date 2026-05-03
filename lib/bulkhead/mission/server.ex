@@ -54,6 +54,15 @@ defmodule Bulkhead.Mission.Server do
       fail_mission(state, :timeout)
       {:stop, :normal, state}
     else
+      IO.puts("""
+      \n[MISSION TICK] ---------------------------------------
+      Module: #{inspect(state.module)}
+      Status: #{state.status}
+      User:   #{state.user_id}
+      State Data: #{inspect(state.mission_state, pretty: true)}
+      -------------------------------------------------------
+      """)
+
       case state.module.tick(state.mission_state) do
         {:continue, new_mission_state} ->
           new_state = %{state | mission_state: new_mission_state}
@@ -199,9 +208,12 @@ defmodule Bulkhead.Mission.Server do
 
   defp reason_to_string(:hull_destroyed), do: "Корабль уничтожен"
   defp reason_to_string(:timeout), do: "Время миссии истекло"
-  defp reason_to_string(r), do: to_string(r)
+
+  defp reason_to_string(:target_lost),
+    do: "Спутник-ретранслятор был уничтожен"
 
   defp resolve_module(:expedition), do: Bulkhead.Mission.Expedition
+  defp resolve_module(:defense), do: Bulkhead.Mission.Defend
 
   defp schedule_tick(interval), do: Process.send_after(self(), :tick, interval)
 

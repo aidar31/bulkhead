@@ -2,7 +2,7 @@ defmodule Bulkhead.Mission.Expedition do
   @behaviour Bulkhead.Mission.Behaviour
 
   @impl true
-  def tick_interval, do: 7_000
+  def tick_interval, do: 4_000
 
   @impl true
   def init(args) do
@@ -56,7 +56,7 @@ defmodule Bulkhead.Mission.Expedition do
         rewards = %{scrap: state.scrap_collected}
         {:complete, rewards, %{state | current_pos: new_pos}}
 
-      :rand.uniform(100) <= 45 ->
+      :rand.uniform(100) <= 35 ->
         event = random_event(state)
         {:event, event, %{state | current_pos: new_pos, hull: new_hull}}
 
@@ -92,49 +92,63 @@ defmodule Bulkhead.Mission.Expedition do
   def render(state) do
     hull_pct = round(state.hull / state.hull_max * 100)
 
-    hull_icon =
-      cond do
-        hull_pct > 70 -> "🟢"
-        hull_pct > 30 -> "🟡"
-        true -> "🔴"
-      end
-
+    # Считаем примерное время прибытия для Discord Timestamp
     speed = max(1, state.base_speed - speed_penalty(state))
+    remaining_dist = max(0, state.distance - state.current_pos)
 
-    main_display = """
-    ```ml
-    [ СТАТУС СИСТЕМ: НОРМА ]
-    Лог: #{state.last_log}
-    ```
+    # Сколько тиков осталось (округляем вверх) * интервал в секундах
+    seconds_left = ceil(remaining_dist / speed) * (tick_interval() / 1000)
+    arrival_ts = System.system_time(:second) + round(seconds_left)
+
+    status_emoji =
+      cond do: (
+             hull_pct > 70 -> "🟦"
+             hull_pct > 30 -> "🟧"
+             true -> "🟥"
+           )
+
+    description = """
     #{progress_bar(state.current_pos, state.distance)}
+
+    **Последняя запись в бортовом журнале:**
+    > #{state.last_log}
+
+    🛰️ **Ожидаемое прибытие:** <t:#{arrival_ts}:R>
     """
 
     %{
-      title: "#{hull_icon} Экспедиция: Дальний Космос",
-      description: main_display,
+      # Используем автора сообщения для персонализации (если есть user_id в стейте)
+      author: %{name: "Бортовой компьютер корабля ##{state.ship_id}"},
+      title: "#{status_emoji} Экспедиция в глубокий космос",
+      description: description,
       color: state_color(hull_pct),
       fields: [
-        %{
-          name: "🛡️ Корпус",
-          value: "```fix\n#{state.hull} / #{state.hull_max}```",
-          inline: true
-        },
-        %{
-          name: "📦 Скрап",
-          value: "```fix\n#{state.scrap_collected} / #{state.cargo_capacity}```",
-          inline: true
-        },
-        %{
-          name: "🛰️ Координаты",
-          value: "```fix\n#{state.current_pos} / #{state.distance}```",
-          inline: true
-        },
-        %{name: "⠀", value: "───────────────", inline: false}
+        %{name: "🛡️ Корпус", value: "`#{hull_pct}%`", inline: true},
+        %{name: "📦 Ресурсы", value: "`#{state.scrap_collected} ед.`", inline: true},
+        %{name: "🚀 Скорость", value: "`#{speed} а.е./т`", inline: true}
       ],
-      footer: %{
-        text: "Скорость: #{speed} а.е./т • Корабль ##{state.ship_id}"
-      }
+      footer: %{text: "Системы активны • Дистанция: #{state.current_pos}/#{state.distance} км"}
     }
+  end
+
+  def render_components(nil), do: []
+
+  def render_components(event) do
+    buttons =
+      Enum.map(event.actions, fn action ->
+        %{
+          # BUTTON
+          type: 2,
+          # 1 = Primary, 2 = Secondary...
+          style: Map.get(action, :style, 1),
+          label: action.label,
+          custom_id: action.id,
+          emoji: Map.get(action, :emoji)
+        }
+      end)
+
+    # Action Row
+    [%{type: 1, components: buttons}]
   end
 
   defp speed_penalty(state) do

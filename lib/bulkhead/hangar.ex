@@ -18,6 +18,10 @@ defmodule Bulkhead.Hangar do
     GenServer.call(via(guild_id), :get_available_ships)
   end
 
+  def get_player_ships(guild_id, user_id) do
+    GenServer.call(via(guild_id), {:get_player_ships, user_id})
+  end
+
   def set_ship_on_mission(guild_id, ship_id) do
     GenServer.call(via(guild_id), {:set_on_mission, ship_id})
   end
@@ -32,7 +36,16 @@ defmodule Bulkhead.Hangar do
     guild_id = Keyword.fetch!(args, :guild_id)
 
     building = Store.get_building(guild_id, "hangar") || %{level: 1}
-    ships = Store.get_all_ships(guild_id) |> index_by_id()
+
+    ships =
+      Store.get_all_ships(guild_id)
+      |> Enum.map(fn ship ->
+        case ship.status do
+          "on_mission" -> %{ship | status: "idle"}
+          _ -> ship
+        end
+      end)
+      |> index_by_id()
 
     state = %{
       guild_id: guild_id,
@@ -61,12 +74,19 @@ defmodule Bulkhead.Hangar do
     {:reply, available, state}
   end
 
+  def handle_call({:get_player_ships, user_id}, _from, state) do
+    player_ships =
+      state.ships
+      |> Map.values()
+      |> Enum.filter(&(&1.user_id == user_id))
+
+    {:reply, player_ships, state}
+  end
+
   def handle_call({:set_on_mission, ship_id}, _from, state) do
     case Map.get(state.ships, ship_id) do
       %{status: "idle"} = ship ->
         new_ship = %{ship | status: "on_mission"}
-
-        Store.set_ship_on_mission(ship_id)
 
         new_ships = Map.put(state.ships, ship_id, new_ship)
         {:reply, :ok, %{state | ships: new_ships}}
@@ -94,18 +114,33 @@ defmodule Bulkhead.Hangar do
     {:noreply, %{state | ships: new_ships}}
   end
 
+  def handle_cast({:release_ship, ship_id}, state) do
+    new_ships =
+      Map.update!(state.ships, ship_id, fn ship ->
+        %{ship | status: "idle"}
+      end)
+
+    {:noreply, %{state | ships: new_ships}}
+  end
+
   def handle_info({:recovery_complete, ship_id}, state) do
     case Map.get(state.ships, ship_id) do
       %{status: "recovering"} = ship ->
-        max_hull = ship.stats["hull_max"] || 100
+        eff_stats = get_effective_stats(ship)
+        max_hull = eff_stats["hull_max"] || 100
 
         Store.set_ship_idle(ship_id)
         Store.update_ship_hull(ship_id, max_hull)
 
-        new_ship = %{ship | status: "idle", available_at: nil, current_hull: max_hull}
+        new_ship = %{
+          ship
+          | status: "idle",
+            available_at: nil,
+            current_hull: max_hull,
+            stats: eff_stats
+        }
 
         broadcast_ready(state.guild_id, ship)
-
         {:noreply, %{state | ships: Map.put(state.ships, ship_id, new_ship)}}
 
       _ ->
@@ -121,6 +156,28 @@ defmodule Bulkhead.Hangar do
   end
 
   # Helpers
+
+  defp get_effective_stats(ship) do
+    base_stats = ship.stats
+    modules = ship.metadata["equipped_modules"] || []
+
+    # Пример того, как модули меняют статы
+    Enum.reduce(modules, base_stats, fn module_id, acc ->
+      case module_id do
+        "heavy_plating" ->
+          Map.update(acc, "hull_max", 0, &(&1 + 20))
+
+        "overclocked_core" ->
+          Map.update(acc, "firepower", 0, &(&1 + 5))
+
+        "nanobots" ->
+          Map.put(acc, "regen_bonus", 0.02)
+
+        _ ->
+          acc
+      end
+    end)
+  end
 
   defp schedule_recovery_check(ship_id, available_at) do
     delay = DateTime.diff(available_at, DateTime.utc_now(), :millisecond)

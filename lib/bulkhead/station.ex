@@ -78,7 +78,7 @@ defmodule Bulkhead.Station do
   end
 
   # Missions
-  def handle_call({:start_mission, %{type: :expedition} = args}, _from, state) do
+  def handle_call({:start_mission, args}, _from, state) do
     case Hangar.get_available_ships(state.guild_id) do
       [ship | _] ->
         case Hangar.set_ship_on_mission(state.guild_id, ship.id) do

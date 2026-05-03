@@ -1,5 +1,5 @@
 defmodule BulkheadBot.Commands.StartMission do
-  def execute(interaction) do
+  def execute(interaction, mission_type) do
     guild_id = interaction.guild_id
     user_id = interaction.user.id
 
@@ -9,17 +9,22 @@ defmodule BulkheadBot.Commands.StartMission do
            guild_id: guild_id,
            user_id: user_id,
            token: interaction.token,
-           type: :expedition,
+           type: mission_type,
            station_pid: station_pid
          }) do
       {:ok, _id} ->
-        Nostrum.Api.Interaction.edit_response(interaction, %{
-          content: "🚀 Экспедиция началась!"
-        })
+        msg =
+          case mission_type do
+            :expedition -> "🚀 Экспедиция началась!"
+            :defense -> "📡 Подготовка к обороне спутника завершена. По коням!"
+            _ -> "🚀 Миссия запущена!"
+          end
+
+        Nostrum.Api.Interaction.edit_response(interaction, %{content: msg})
 
       {:error, reason} ->
         Nostrum.Api.Interaction.edit_response(interaction, %{
-          content: "❌ Ошибка: #{inspect(reason)}"
+          content: "❌ Ошибка запуска: #{inspect(reason)}"
         })
     end
   end

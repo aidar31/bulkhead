@@ -54,12 +54,12 @@ defmodule Bulkhead.Station.Store do
     )
   end
 
-  def set_ship_on_mission(ship_id) do
-    Repo.update_all(
-      from(s in Game.Ship, where: s.id == ^ship_id),
-      set: [status: "on_mission", updated_at: DateTime.utc_now()]
-    )
-  end
+  # def set_ship_on_mission(ship_id) do
+  #   Repo.update_all(
+  #     from(s in Game.Ship, where: s.id == ^ship_id),
+  #     set: [status: "on_mission", updated_at: DateTime.utc_now()]
+  #   )
+  # end
 
   # def set_ship_recovering(ship_id, hangar_level) do
   #   # Уровень ангара влияет на время восстановления
@@ -114,6 +114,17 @@ defmodule Bulkhead.Station.Store do
       {:ok, station} -> station
       {:error, reason} -> raise "Failed to create station: #{inspect(reason)}"
     end
+  end
+
+  def set_ship_idle(ship_id) do
+    Repo.update_all(
+      from(s in Game.Ship, where: s.id == ^ship_id),
+      set: [
+        status: "idle",
+        available_at: nil,
+        updated_at: DateTime.utc_now()
+      ]
+    )
   end
 
   def set_ship_recovering(ship_id, available_at) do

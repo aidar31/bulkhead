@@ -4,13 +4,20 @@ defmodule Bulkhead.Game.Ship do
 
   schema "ships" do
     field :guild_id, :integer
+    field :user_id, :integer
     field :name, :string
     field :type, :string
     field :status, :string, default: "idle"
+    field :slots_total, :integer
     field :stats, :map, default: %{}
     field :current_hull, :integer, default: 100
     field :available_at, :utc_datetime
-    field :metadata, :map, default: %{}
+
+    field :metadata, :map,
+      default: %{
+        "equipped_modules" => [],
+        "experience" => 0
+      }
 
     belongs_to :station, Bulkhead.Game.Station,
       foreign_key: :guild_id,
@@ -46,6 +53,13 @@ defmodule Bulkhead.Game.Ship do
     ship.status == "idle" ||
       (ship.status == "recovering" &&
          DateTime.compare(DateTime.utc_now(), ship.available_at) == :gt)
+  end
+
+  def get_effective_stats(ship) do
+    base = ship.stats
+    # modules = ship.metadata["equipped_modules"] || []
+
+    base
   end
 
   defp put_base_stats(changeset) do

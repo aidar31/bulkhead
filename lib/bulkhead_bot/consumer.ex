@@ -36,22 +36,24 @@ defmodule BulkheadBot.Consumer do
   end
 
   defp route_command(%Interaction{data: %{name: "start_mission", options: options}} = interaction) do
-    mission_type_string =
-      Enum.find(options, fn opt -> opt.name == "type" end).value
+    mission_type_string = Enum.find(options, fn opt -> opt.name == "type" end).value
 
     Nostrum.Api.Interaction.create_response(interaction, %{type: 5})
 
     case mission_type_string do
       "expedition" ->
-        BulkheadBot.Commands.StartMission.execute(interaction)
+        BulkheadBot.Commands.StartMission.execute(interaction, :expedition)
+
+      "defense" ->
+        BulkheadBot.Commands.StartMission.execute(interaction, :defense)
 
       "mining" ->
         Nostrum.Api.Interaction.edit_response(interaction, %{
-          content: "⛏️ Добыча пока в разработке!"
+          content: "⛏️ Добыча в разработке."
         })
 
       _ ->
-        Nostrum.Api.Interaction.edit_response(interaction, %{content: "❌ Неизвестный тип миссии"})
+        Nostrum.Api.Interaction.edit_response(interaction, %{content: "❌ Неизвестная миссия"})
     end
   end
 
@@ -91,6 +93,7 @@ defmodule BulkheadBot.Consumer do
             required: true,
             choices: [
               %{name: "Экспедиция", value: "expedition"},
+              %{name: "🛡️ Оборона Спутника", value: "defense"},
               %{name: "⛏️ Добыча (в разработке)", value: "mining"}
             ]
           }
