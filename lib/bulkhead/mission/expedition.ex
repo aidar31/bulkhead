@@ -5,6 +5,15 @@ defmodule Bulkhead.Mission.Expedition do
   def tick_interval, do: 4_000
 
   @impl true
+  def mission_name, do: "Экспедиция: Дальний Космос"
+
+  @impl true
+  def validate_start(_args) do
+    # В будущем тут можно проверить что сектор под угрозой
+    :ok
+  end
+
+  @impl true
   def init(args) do
     ship_stats = args[:ship_stats] || %{}
 

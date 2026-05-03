@@ -122,8 +122,9 @@ defmodule Bulkhead.Station do
         state
       ) do
     new_resources =
-      state.resources
-      |> Map.update("scrap", 0, &(&1 + Map.get(rewards, :scrap, 0)))
+      Enum.reduce(rewards, state.resources, fn {resource, amount}, acc ->
+        Map.update(acc, to_string(resource), amount, &(&1 + amount))
+      end)
 
     Hangar.start_recovery(state.guild_id, ship_id)
 

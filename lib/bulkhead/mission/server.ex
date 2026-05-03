@@ -18,28 +18,35 @@ defmodule Bulkhead.Mission.Server do
   def init(args) do
     module = resolve_module(args.type)
 
-    mission_state = module.init(args)
+    case function_exported?(module, :validate_start, 1) &&
+           module.validate_start(args) do
+      {:error, reason} ->
+        {:stop, {:shutdown, {:validation_failed, reason}}}
 
-    state = %{
-      # мета
-      module: module,
-      guild_id: args.guild_id,
-      user_id: args.user_id,
-      station_pid: args.station_pid,
-      token: args.token,
-      type: args.type,
-      started_at: DateTime.utc_now(),
-      # стейт конкретной миссии
-      mission_state: mission_state,
-      # :traveling | :event | :complete | :failed
-      status: :traveling,
-      last_activity: DateTime.utc_now()
-    }
+      _ ->
+        mission_state = module.init(args)
 
-    schedule_tick(module.tick_interval())
-    update_display(state)
+        state = %{
+          # мета
+          module: module,
+          guild_id: args.guild_id,
+          user_id: args.user_id,
+          station_pid: args.station_pid,
+          token: args.token,
+          type: args.type,
+          started_at: DateTime.utc_now(),
+          # стейт конкретной миссии
+          mission_state: mission_state,
+          # :traveling | :event | :complete | :failed
+          status: :traveling,
+          last_activity: DateTime.utc_now()
+        }
 
-    {:ok, state}
+        schedule_tick(module.tick_interval())
+        update_display(state)
+
+        {:ok, state}
+    end
   end
 
   # Тик — делегируем в модуль

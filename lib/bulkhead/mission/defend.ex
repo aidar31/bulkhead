@@ -5,6 +5,14 @@ defmodule Bulkhead.Mission.Defend do
   def tick_interval, do: 3_000
 
   @impl true
+  def validate_start(_args) do
+    # В будущем тут можно проверить что сектор под угрозой
+    :ok
+  end
+
+  def mission_name, do: "Оборона Ретранслятора"
+
+  @impl true
   def init(args) do
     ship_stats = args[:ship_stats] || %{}
 
@@ -26,7 +34,6 @@ defmodule Bulkhead.Mission.Defend do
 
       # Режим корабля: :normal, :tank (защита спутника), :assault (урон)
       mode: :normal,
-      last_log: "Занимаем позицию у ретранслятора. Входящие сигналы неопознаны...",
 
       # Флаги
       status: :loading,
@@ -122,9 +129,6 @@ defmodule Bulkhead.Mission.Defend do
              satellite_health: new_sat,
              enemies_down: new_enemies_down
          }}
-
-        {:complete, rewards,
-         %{state | wave: state.max_waves, hull: new_hull, satellite_health: new_sat}}
 
       rem(new_wave, 4) == 0 ->
         event = tactial_choice_event()

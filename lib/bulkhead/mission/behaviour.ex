@@ -20,4 +20,14 @@ defmodule Bulkhead.Mission.Behaviour do
 
   @doc "Сколько времени между тиками для этого типа миссии."
   @callback tick_interval() :: non_neg_integer()
+
+  # Новое — валидация перед стартом
+  # Expedition требует корабль, Defend требует корабль + спутник в секторе
+  # Возвращает :ok или {:error, reason} который показывается игроку
+  @callback validate_start(args :: map()) :: :ok | {:error, atom()}
+
+  # Новое — человекочитаемые названия для ошибок и UI
+  @callback mission_name() :: String.t()
+
+  @optional_callbacks validate_start: 1
 end
