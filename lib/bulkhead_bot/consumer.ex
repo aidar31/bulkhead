@@ -57,9 +57,26 @@ defmodule BulkheadBot.Consumer do
     end
   end
 
+  defp route_command(%Interaction{data: %{name: "raid"}} = interaction) do
+    Nostrum.Api.Interaction.create_response(interaction, %{type: 5})
+    BulkheadBot.Commands.Raid.execute(interaction)
+  end
+
   defp route_command(interaction) do
     IO.inspect(interaction.data.name, label: "Unknown command")
     :ok
+  end
+
+  defp route_component(%Interaction{data: %{custom_id: "raid_join_" <> lobby_id}} = interaction) do
+    BulkheadBot.Commands.Raid.handle_join(interaction, lobby_id)
+  end
+
+  defp route_component(%Interaction{data: %{custom_id: "raid_start_" <> lobby_id}} = interaction) do
+    BulkheadBot.Commands.Raid.handle_start(interaction, lobby_id)
+  end
+
+  defp route_component(%Interaction{data: %{custom_id: "raid_cancel_" <> lobby_id}} = interaction) do
+    BulkheadBot.Commands.Raid.handle_cancel(interaction, lobby_id)
   end
 
   defp route_component(%Interaction{data: %{custom_id: "mission_" <> action_id}} = interaction) do
@@ -77,6 +94,10 @@ defmodule BulkheadBot.Consumer do
       %{
         name: "ping",
         description: "Проверить связь с ботом"
+      },
+      %{
+        name: "raid",
+        description: "Начать совместный рейд на грузовой конвой (2-4 пилота)"
       },
       %{
         name: "hangar",

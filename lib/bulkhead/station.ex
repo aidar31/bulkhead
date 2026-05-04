@@ -19,6 +19,16 @@ defmodule Bulkhead.Station do
     end
   end
 
+  def start_coop_mission(guild_id, mission_args, participant_count) do
+    case ensure_started(guild_id) do
+      {:ok, pid} ->
+        GenServer.call(pid, {:start_coop_mission, mission_args, participant_count})
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   def get_status(guild_id) do
     GenServer.call(via(guild_id), :get_status)
   end
@@ -117,6 +127,71 @@ defmodule Bulkhead.Station do
     end
   end
 
+  def handle_call({:start_coop_mission, args, participant_count}, _from, state) do
+    available = Hangar.get_available_ships(state.guild_id)
+
+    if length(available) < participant_count do
+      {:reply, {:error, :not_enough_ships}, state}
+    else
+      ships = Enum.take(available, participant_count)
+
+      results =
+        Enum.map(ships, fn ship ->
+          Hangar.set_ship_on_mission(state.guild_id, ship.id)
+          ship
+        end)
+
+      # participants приходят из args с токенами
+      participants_with_ships =
+        Enum.zip(args.participants, results)
+        |> Enum.map(fn {p, ship} ->
+          Map.merge(p, %{
+            ship_id: ship.id,
+            ship_stats: ship.stats,
+            ship_hull: ship.current_hull
+          })
+        end)
+
+      mission_args =
+        Map.merge(args, %{
+          participants: participants_with_ships,
+          # Главный организатор (для via-ключа в Registry)
+          user_id: hd(args.participants).user_id,
+          token: hd(args.participants).token,
+          station_pid: self()
+        })
+
+      case DynamicSupervisor.start_child(
+             get_mission_sup(state.guild_id),
+             {Bulkhead.Mission.Server, mission_args}
+           ) do
+        {:ok, pid} ->
+          {:reply, {:ok, pid},
+           %{state | active_missions: MapSet.put(state.active_missions, pid), dirty: true}}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
+    end
+  end
+
+  # handle_info для кооп-завершения — ships_info теперь список
+  def handle_info({:mission_complete, rewards, ships_info, _pid}, state)
+      when is_list(ships_info) do
+    new_resources =
+      Enum.reduce(rewards, state.resources, fn {resource, amount}, acc ->
+        Map.update(acc, resource, amount, &(&1 + amount))
+      end)
+
+    # Восстанавливаем все корабли
+    Enum.each(ships_info, fn %{ship_id: ship_id} ->
+      Hangar.start_recovery(state.guild_id, ship_id)
+    end)
+
+    {:noreply, %{state | resources: new_resources, dirty: true}}
+  end
+
+  # Старый handle_info для соло (обратная совместимость через map)
   def handle_info(
         {:mission_complete, rewards, %{ship_id: ship_id, final_hull: _hull}, _pid},
         state
@@ -127,13 +202,21 @@ defmodule Bulkhead.Station do
       end)
 
     Hangar.start_recovery(state.guild_id, ship_id)
-
-    Phoenix.PubSub.broadcast(Bulkhead.PubSub, "galaxy:events", {
-      :mission_complete,
-      %{guild_id: state.guild_id, rewards: rewards}
-    })
-
     {:noreply, %{state | resources: new_resources, dirty: true}}
+  end
+
+  # --- ПРОВАЛ (Co-op) ---
+  def handle_info({:mission_failed, reason, lost_ships, mission_pid}, state)
+      when is_list(lost_ships) do
+    Logger.error("Raid Failed: #{reason}")
+
+    Enum.each(lost_ships, fn %{ship_id: id} ->
+      Hangar.start_recovery(state.guild_id, id)
+      Hangar.update_ship_hull(state.guild_id, id, 10)
+    end)
+
+    {:noreply,
+     %{state | active_missions: MapSet.delete(state.active_missions, mission_pid), dirty: true}}
   end
 
   def handle_info({:mission_failed, _reason, %{ship_id: ship_id}, _pid}, state) do
@@ -187,6 +270,16 @@ defmodule Bulkhead.Station do
   # end
 
   # Helpers
+
+  defp handle_rewards(state, rewards) do
+    new_resources =
+      Enum.reduce(rewards, state.resources, fn {resource, amount}, acc ->
+        Map.update(acc, resource, amount, &(&1 + amount))
+      end)
+
+    %{state | resources: new_resources, dirty: true}
+  end
+
   defp get_mission_sup(guild_id),
     do: {:via, Registry, {Bulkhead.Registry, {:mission_sup, guild_id}}}
 

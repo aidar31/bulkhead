@@ -48,6 +48,7 @@ defmodule Bulkhead.Game.Ship do
     ship
     |> cast(attrs, [
       :guild_id,
+      :user_id,
       :name,
       :type,
       :status,
@@ -56,7 +57,7 @@ defmodule Bulkhead.Game.Ship do
       :available_at,
       :metadata
     ])
-    |> validate_required([:guild_id, :name, :type])
+    |> validate_required([:guild_id, :user_id, :name, :type])
     |> put_base_stats()
   end
 

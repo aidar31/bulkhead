@@ -8,7 +8,7 @@ defmodule Bulkhead.Mission.Server do
   end
 
   def choose_action(guild_id, user_id, action) do
-    GenServer.cast(via(guild_id, user_id), {:action, action})
+    GenServer.cast(via(guild_id, user_id), {:action, action, user_id})
   end
 
   def get_state(guild_id, user_id) do
@@ -16,7 +16,18 @@ defmodule Bulkhead.Mission.Server do
   end
 
   def init(args) do
+    # Дебаг
+    IO.puts("!!! MISSION SERVER STARTING FOR USER #{args.user_id} !!!")
     module = resolve_module(args.type)
+
+    participants =
+      case args[:participants] do
+        nil ->
+          [%{user_id: args.user_id, token: args.token}]
+
+        list ->
+          list
+      end
 
     case function_exported?(module, :validate_start, 1) &&
            module.validate_start(args) do
@@ -27,17 +38,18 @@ defmodule Bulkhead.Mission.Server do
         mission_state = module.init(args)
 
         state = %{
-          # мета
           module: module,
           guild_id: args.guild_id,
+          # оставил для обратной совместимости
           user_id: args.user_id,
+          # список всех участников с их токенами
+          participants: participants,
           station_pid: args.station_pid,
+          # основной токен для обратной совместимости
           token: args.token,
           type: args.type,
           started_at: DateTime.utc_now(),
-          # стейт конкретной миссии
           mission_state: mission_state,
-          # :traveling | :event | :complete | :failed
           status: :traveling,
           last_activity: DateTime.utc_now()
         }
@@ -96,18 +108,28 @@ defmodule Bulkhead.Mission.Server do
     end
   end
 
-  def handle_cast({:action, action}, %{status: :event} = state) do
-    new_mission_state = state.module.handle_action(action, state.mission_state)
+  def handle_cast({:action, action, user_id}, %{status: :event} = state) do
+    action_with_user = Map.put(action, "user_id", user_id)
+    result = state.module.handle_action(action_with_user, state.mission_state)
 
-    new_state = %{
-      state
-      | mission_state: new_mission_state,
-        status: :traveling,
-        last_activity: DateTime.utc_now()
-    }
+    # handle_action может вернуть стейт ИЛИ {:complete_now, rewards, new_state}
+    case result do
+      {:complete_now, rewards, new_mission_state} ->
+        new_state = %{state | mission_state: new_mission_state, status: :complete}
+        finish_mission(new_state, rewards)
+        {:stop, :normal, new_state}
 
-    update_display(new_state)
-    {:noreply, new_state}
+      new_mission_state ->
+        new_state = %{
+          state
+          | mission_state: new_mission_state,
+            status: :traveling,
+            last_activity: DateTime.utc_now()
+        }
+
+        update_display(new_state)
+        {:noreply, new_state}
+    end
   end
 
   def handle_cast({:action, _action}, state) do
@@ -122,10 +144,12 @@ defmodule Bulkhead.Mission.Server do
   defp update_display(state) do
     embed = state.module.render(state.mission_state)
 
-    Nostrum.Api.Interaction.edit_response(state.token, %{
-      embeds: [embed],
-      components: []
-    })
+    Enum.each(state.participants, fn p ->
+      Nostrum.Api.Interaction.edit_response(p.token, %{
+        embeds: [embed],
+        components: []
+      })
+    end)
   end
 
   defp show_event(state, event) do
@@ -138,54 +162,72 @@ defmodule Bulkhead.Mission.Server do
         color: 0xFFAA00
       })
 
-    Nostrum.Api.Interaction.edit_response(state.token, %{
-      embeds: [embed],
-      components: components
-    })
+    Enum.each(state.participants, fn p ->
+      Nostrum.Api.Interaction.edit_response(p.token, %{
+        embeds: [embed],
+        components: components
+      })
+    end)
   end
 
   defp finish_mission(state, rewards) do
-    # Уведомляем Station с данными о корабле
+    # Собираем все ship_id из участников миссии
+    ships_info =
+      case state.mission_state do
+        %{ships: ships} ->
+          Enum.map(ships, &%{ship_id: &1.ship_id, final_hull: &1.hull})
+
+        ms ->
+          [%{ship_id: ms.ship_id, final_hull: ms.hull}]
+      end
+
     send(state.station_pid, {
       :mission_complete,
       rewards,
-      %{
-        ship_id: state.mission_state.ship_id,
-        final_hull: state.mission_state.hull
-      },
+      ships_info,
       self()
     })
 
-    Nostrum.Api.Interaction.edit_response(state.token, %{
-      embeds: [
-        %{
-          title: "🏁 Миссия завершена!",
-          color: 0x00FF00,
-          fields: rewards_to_fields(rewards)
-        }
-      ],
-      components: []
-    })
+    Enum.each(state.participants, fn p ->
+      Nostrum.Api.Interaction.edit_response(p.token, %{
+        embeds: [
+          %{
+            title: "🏁 Миссия завершена!",
+            color: 0x00FF00,
+            fields: rewards_to_fields(rewards)
+          }
+        ],
+        components: []
+      })
+    end)
   end
 
   defp fail_mission(state, reason) do
+    ships_info =
+      case state.mission_state do
+        %{ships: ships} -> Enum.map(ships, &%{ship_id: &1.ship_id, final_hull: 0})
+        ms -> [%{ship_id: ms.ship_id, final_hull: 0}]
+      end
+
     send(state.station_pid, {
       :mission_failed,
       reason,
-      %{ship_id: state.mission_state.ship_id, final_hull: 0},
+      ships_info,
       self()
     })
 
-    Nostrum.Api.Interaction.edit_response(state.token, %{
-      embeds: [
-        %{
-          title: "💀 Миссия провалена",
-          description: reason_to_string(reason),
-          color: 0xFF0000
-        }
-      ],
-      components: []
-    })
+    Enum.each(state.participants, fn p ->
+      Nostrum.Api.Interaction.edit_response(p.token, %{
+        embeds: [
+          %{
+            title: "💀 Миссия провалена",
+            description: reason_to_string(reason),
+            color: 0xFF0000
+          }
+        ],
+        components: []
+      })
+    end)
   end
 
   defp build_action_components(actions) do
@@ -221,6 +263,7 @@ defmodule Bulkhead.Mission.Server do
 
   defp resolve_module(:expedition), do: Bulkhead.Mission.Expedition
   defp resolve_module(:defense), do: Bulkhead.Mission.Defend
+  defp resolve_module(:raid), do: Bulkhead.Mission.Raid
 
   defp schedule_tick(interval), do: Process.send_after(self(), :tick, interval)
 

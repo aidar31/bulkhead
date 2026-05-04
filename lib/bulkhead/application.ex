@@ -15,6 +15,7 @@ defmodule Bulkhead.Application do
     children = [
       BulkheadWeb.Telemetry,
       {Registry, keys: :unique, name: Bulkhead.Registry},
+      BulkheadBot.Lobby.Registry,
       Bulkhead.Repo,
       {DNSCluster, query: Application.get_env(:bulkhead, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Bulkhead.PubSub},
