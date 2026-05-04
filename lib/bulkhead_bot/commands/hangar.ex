@@ -10,39 +10,59 @@ defmodule BulkheadBot.Commands.Hangar do
       "command: /hangar guild_id: #{interaction.guild_id} guild_id: #{interaction.user.id} "
     )
 
+    target_user = get_target_user(interaction)
+
     with_guild(interaction, fn guild_id ->
-      case Hangar.get_info(guild_id) do
-        %{level: level, ships: ships} ->
+      case Hangar.get_player_ships(guild_id, target_user.id) do
+        :loading ->
+          Api.Interaction.edit_response(interaction, %{content: "⏳ Загрузка..."})
+
+        [] ->
+          content =
+            if target_user.id == interaction.user.id,
+              do: "❌ У вас пока нет кораблей.",
+              else: "❌ У пользователя <@#{target_user.id}> нет кораблей."
+
+          Api.Interaction.edit_response(interaction, %{content: content})
+
+        ships ->
           embed = %{
-            title: "🏗️ Ангар станции",
-            description:
-              "Уровень ангара: **#{level}**\nЗдесь хранятся и обслуживаются ваши корабли.",
+            title: "🏗️ Ангар: #{target_user.username}",
+            description: "Список личных кораблей в этом секторе.",
             color: 0x5865F2,
             fields: render_ships_fields(ships)
           }
 
           Api.Interaction.edit_response(interaction, %{embeds: [embed]})
-
-        _ ->
-          # Если ангар еще не запущен для этой гильдии
-          Api.Interaction.edit_response(interaction, %{
-            content: "❌ Ангар не найден или еще загружается..."
-          })
       end
     end)
   end
 
   # --- Helpers ---
+  defp get_target_user(interaction) do
+    case interaction.data.options do
+      [%{name: "target", value: user_id}] ->
+        # В некоторых версиях Nostrum юзер уже в resolved,
+        # но самый надежный способ — достать из мапы resolved.users
+        interaction.data.resolved.users[user_id]
+
+      _ ->
+        interaction.user
+    end
+  end
 
   defp render_ships_fields(ships) do
     ships
     |> Enum.sort_by(& &1.id)
     |> Enum.map(fn ship ->
+      current = round(ship.current_hull)
+      max = ship.stats["hull_max"] || 100
+
       %{
         name: "#{ship_icon(ship.type)} #{ship.name} — *#{ship.type}*",
         value: """
         Статус: **#{status_text(ship)}**
-        Корпус: `#{ship.current_hull} / #{ship.stats["hull_max"] || 100}`
+        Корпус: `#{current} / #{max}`
         """,
         inline: false
       }

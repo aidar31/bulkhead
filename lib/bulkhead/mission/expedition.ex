@@ -22,19 +22,20 @@ defmodule Bulkhead.Mission.Expedition do
     base_speed = Map.get(ship_stats, "speed", 10)
     cargo_capacity = Map.get(ship_stats, "cargo", 50)
 
+    scrap_yield_mod = Map.get(ship_stats, "scrap_yield_modifier", 1.0)
+    prevent_destruction = Map.get(ship_stats, "prevent_destruction", false)
+    distance_mod = Map.get(ship_stats, "distance_modifier", 1.0)
+
     %{
-      # Ship данные
       ship_id: args[:ship_id],
       ship_stats: ship_stats,
-
-      # Берём текущий hull корабля, не 100
       hull: args[:ship_hull] || hull_max,
       hull_max: hull_max,
       base_speed: base_speed,
       cargo_capacity: cargo_capacity,
-
-      # Миссия
-      distance: 250,
+      scrap_yield_modifier: scrap_yield_mod,
+      prevent_destruction: prevent_destruction,
+      distance: round(250 * distance_mod),
       current_pos: 0,
       scrap_collected: 0,
       last_log: "Корабль вышел на орбиту..."
@@ -58,6 +59,15 @@ defmodule Bulkhead.Mission.Expedition do
     new_hull = state.hull - passive_damage
 
     cond do
+      new_hull <= 0 and state.prevent_destruction ->
+        {:continue,
+         %{
+           state
+           | hull: round(state.hull_max * 0.2),
+             last_log: "🆘 Аварийный маяк активирован! Экстренное возвращение.",
+             current_pos: state.distance
+         }}
+
       new_hull <= 0 ->
         {:failed, :hull_destroyed, %{state | hull: 0, current_pos: new_pos}}
 
@@ -80,12 +90,19 @@ defmodule Bulkhead.Mission.Expedition do
   @impl true
   def handle_action(%{"id" => "salvage"}, state) do
     damage = :rand.uniform(15) + 5
+    base_loot = 15
+
+    # ПРИМЕНЯЕМ МОДИФИКАТОР:
+    # Если модуля нет, там будет 1.0 (ничего не изменится)
+    # Если модуль есть, там будет 1.3
+    actual_loot = round(base_loot * state.scrap_yield_modifier)
 
     %{
       state
-      | scrap_collected: state.scrap_collected + 15,
+      | scrap_collected: state.scrap_collected + actual_loot,
         hull: state.hull - damage,
-        last_log: "🚜 Рискнули! Собрали скрап, но получили -#{damage}% урона."
+        last_log:
+          "🚜 Собрали #{actual_loot} скрапа (бонус сканера: x#{state.scrap_yield_modifier})"
     }
   end
 

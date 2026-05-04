@@ -80,7 +80,15 @@ defmodule BulkheadBot.Consumer do
       },
       %{
         name: "hangar",
-        description: "Посмотреть список кораблей и их состояние"
+        description: "Посмотреть список кораблей в ангаре",
+        options: [
+          %{
+            type: 6,
+            name: "target",
+            description: "Чей ангар вы хотите посмотреть? (Оставьте пустым, чтобы увидеть свой)",
+            required: false
+          }
+        ]
       },
       %{
         name: "start_mission",

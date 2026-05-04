@@ -10,6 +10,7 @@ defmodule Bulkhead.Mission.Defend do
     :ok
   end
 
+  @impl true
   def mission_name, do: "Оборона Ретранслятора"
 
   @impl true
@@ -22,6 +23,8 @@ defmodule Bulkhead.Mission.Defend do
       hull: args[:ship_hull] || 100,
       hull_max: Map.get(ship_stats, "hull_max", 100),
       firepower: Map.get(ship_stats, "attack", 10),
+      prevent_destruction: Map.get(ship_stats, "prevent_destruction", false),
+      regen_pct: Map.get(ship_stats, "hull_regen_pct", 0.0),
 
       # Свойства объекта защиты
       satellite_health: 100,
@@ -112,6 +115,16 @@ defmodule Bulkhead.Mission.Defend do
     new_wave = state.wave + 1
 
     cond do
+      new_hull <= 0 and state.prevent_destruction ->
+        {:continue,
+         %{
+           state
+           | hull: round(state.hull_max * 0.2),
+             last_log: "🆘 Аварийный маяк активирован!",
+             # В Defend нет current_pos — форсируем последнюю волну
+             wave: state.max_waves
+         }}
+
       new_hull <= 0 ->
         {:failed, :hull_destroyed, %{state | hull: 0}}
 

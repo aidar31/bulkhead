@@ -118,12 +118,12 @@ defmodule Bulkhead.Station do
   end
 
   def handle_info(
-        {:mission_complete, rewards, %{ship_id: ship_id, final_hull: hull}, _pid},
+        {:mission_complete, rewards, %{ship_id: ship_id, final_hull: _hull}, _pid},
         state
       ) do
     new_resources =
       Enum.reduce(rewards, state.resources, fn {resource, amount}, acc ->
-        Map.update(acc, to_string(resource), amount, &(&1 + amount))
+        Map.update(acc, resource, amount, &(&1 + amount))
       end)
 
     Hangar.start_recovery(state.guild_id, ship_id)
@@ -136,22 +136,9 @@ defmodule Bulkhead.Station do
     {:noreply, %{state | resources: new_resources, dirty: true}}
   end
 
-  defp get_hangar_info(guild_id) do
-    case Bulkhead.Station.Store.get_building(guild_id, "hangar") do
-      nil -> {:error, :no_hangar}
-      b -> {:ok, b}
-    end
-  end
-
   def handle_info({:mission_failed, _reason, %{ship_id: ship_id}, _pid}, state) do
-    with {:ok, building} <- get_hangar_info(state.guild_id) do
-      # Формула: 5 минут (300с) база, делится на уровень ангара
-      recovery_sec = trunc(300 / building.level * 2)
-      Hangar.start_recovery(state.guild_id, ship_id)
-    end
-
-    Bulkhead.Station.Store.update_ship_hull(ship_id, 20)
-
+    Hangar.start_recovery(state.guild_id, ship_id)
+    Hangar.update_ship_hull(state.guild_id, ship_id, 20)
     {:noreply, state}
   end
 
@@ -164,10 +151,12 @@ defmodule Bulkhead.Station do
 
   def handle_info(:persist, state) do
     if state.dirty do
-      Bulkhead.Station.Store.save(state.guild_id, state.resources, state.metadata)
+      string_resources =
+        Map.new(state.resources, fn {k, v} -> {to_string(k), v} end)
+
+      Bulkhead.Station.Store.save(state.guild_id, string_resources, state.metadata)
     end
 
-    Logger.debug("Persisting station #{state.guild_id} state: #{inspect(state)}")
     schedule_persist()
     {:noreply, %{state | dirty: false}}
   end

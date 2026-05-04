@@ -10,7 +10,7 @@ defmodule Bulkhead.Game.Ship do
     field :status, :string, default: "idle"
     field :slots_total, :integer
     field :stats, :map, default: %{}
-    field :current_hull, :integer, default: 100
+    field :current_hull, :float, default: 100.0
     field :available_at, :utc_datetime
 
     field :metadata, :map,
@@ -23,6 +23,17 @@ defmodule Bulkhead.Game.Ship do
       foreign_key: :guild_id,
       references: :guild_id,
       define_field: false
+
+    has_many :installations, Bulkhead.Game.ShipModuleInstallation, foreign_key: :ship_id
+
+    many_to_many :installed_modules, Bulkhead.Game.ShipModuleDefinition,
+      join_through: Bulkhead.Game.ShipModuleInstallation,
+      # module_id: :id — это :id ShipModuleDefinition
+      join_keys: [ship_id: :id, module_id: :id]
+
+    # отдельное место под расчетные данные,
+    # которые НЕ хранятся в БД
+    field :temp_effective_stats, :map, virtual: true
 
     timestamps()
   end
