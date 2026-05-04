@@ -149,17 +149,42 @@ defmodule Bulkhead.Station do
     {:noreply, state}
   end
 
-  def handle_info(:persist, state) do
-    if state.dirty do
-      string_resources =
-        Map.new(state.resources, fn {k, v} -> {to_string(k), v} end)
+  def handle_info(:persist, %{dirty: true} = state) do
+    snapshot = {state.guild_id, state.resources, state.metadata}
+    parent = self()
 
-      Bulkhead.Station.Store.save(state.guild_id, string_resources, state.metadata)
-    end
+    Task.start(fn ->
+      result = Bulkhead.Station.Store.save(snapshot)
+      send(parent, {:persist_done, result})
+    end)
 
     schedule_persist()
+    # dirty остаётся true пока не придёт :persist_done
+    {:noreply, state}
+  end
+
+  def handle_info({:persist_done, {:ok, _record}}, state) do
     {:noreply, %{state | dirty: false}}
   end
+
+  def handle_info({:persist_done, {:error, changeset}}, state) do
+    require Logger
+    Logger.error("Failed to persist station: #{inspect(changeset.errors)}")
+
+    {:noreply, state}
+  end
+
+  # def handle_info(:persist, state) do
+  #   if state.dirty do
+  #     string_resources =
+  #       Map.new(state.resources, fn {k, v} -> {to_string(k), v} end)
+
+  #     Bulkhead.Station.Store.save(state.guild_id, string_resources, state.metadata)
+  #   end
+
+  #   schedule_persist()
+  #   {:noreply, %{state | dirty: false}}
+  # end
 
   # Helpers
   defp get_mission_sup(guild_id),

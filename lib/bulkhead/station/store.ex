@@ -19,7 +19,7 @@ defmodule Bulkhead.Station.Store do
     end
   end
 
-  def save(guild_id, resources, metadata \\ %{}) do
+  def save({guild_id, resources, metadata} = _snapshot) do
     %Game.Station{guild_id: guild_id}
     |> Game.Station.changeset(%{resources: resources, metadata: metadata})
     |> Repo.insert(
