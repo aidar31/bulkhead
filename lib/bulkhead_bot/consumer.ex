@@ -63,7 +63,6 @@ defmodule BulkheadBot.Consumer do
   end
 
   defp route_command(interaction) do
-    IO.inspect(interaction.data.name, label: "Unknown command")
     :ok
   end
 

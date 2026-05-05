@@ -193,8 +193,7 @@ defmodule BulkheadBot.Commands.Raid do
     player_list =
       participants
       |> Enum.with_index(1)
-      |> Enum.map(fn {p, i} -> "#{i}. <@#{p.user_id}>" end)
-      |> Enum.join("\n")
+      |> Enum.map_join("\n", fn {p, i} -> "#{i}. <@#{p.user_id}>" end)
 
     {title, color, footer} =
       case status do
