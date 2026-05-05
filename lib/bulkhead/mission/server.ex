@@ -171,6 +171,11 @@ defmodule Bulkhead.Mission.Server do
   end
 
   defp finish_mission(state, rewards) do
+    boosted_rewards =
+      Enum.map(rewards, fn {resource, amount} ->
+        {resource, RoleEngine.apply_bonus(amount, state.role_effects, :mission_reward_bonus)}
+      end)
+
     # Собираем все ship_id из участников миссии
     ships_info =
       case state.mission_state do
@@ -183,7 +188,7 @@ defmodule Bulkhead.Mission.Server do
 
     send(state.station_pid, {
       :mission_complete,
-      rewards,
+      boosted_rewards,
       ships_info,
       self()
     })

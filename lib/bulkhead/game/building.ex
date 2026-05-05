@@ -17,7 +17,7 @@ defmodule Bulkhead.Game.Building do
     timestamps()
   end
 
-  @valid_types ~w(hangar factory laboratory)
+  @valid_types ~w(hangar factory laboratory reactor)
 
   def changeset(building, attrs) do
     building

@@ -102,6 +102,76 @@ defmodule Bulkhead.Station.Store do
     |> Repo.one()
   end
 
+  # Добавить в Store:
+
+  def get_module_def(module_id) do
+    Repo.get(Bulkhead.Game.ShipModuleDefinition, module_id)
+  end
+
+  def uninstall_module(ship_id, module_id) do
+    {count, _} =
+      Repo.delete_all(
+        from i in ShipModuleInstallation,
+          where: i.ship_id == ^ship_id and i.module_id == ^module_id
+      )
+
+    if count > 0, do: :ok, else: {:error, :not_found}
+  end
+
+  def update_ship_stats(ship_id, new_stats) do
+    Repo.update_all(
+      from(s in Bulkhead.Game.Ship, where: s.id == ^ship_id),
+      set: [stats: new_stats, updated_at: DateTime.utc_now()]
+    )
+  end
+
+  def save_building(guild_id, type, level) do
+    Repo.insert(
+      %Bulkhead.Game.Building{guild_id: guild_id, type: type, level: level},
+      on_conflict: {:replace, [:level, :updated_at]},
+      conflict_target: [:guild_id, :type]
+    )
+  end
+
+  def save_hangar_snapshot(%{guild_id: guild_id, level: level, ships: ships_data}) do
+    Repo.transaction(fn ->
+      # Уровень ангара
+      Repo.insert(
+        %Game.Building{guild_id: guild_id, type: "hangar", level: level},
+        on_conflict: {:replace, [:level, :updated_at]},
+        conflict_target: [:guild_id, :type]
+      )
+
+      # Корабли — hull, status, available_at
+      Enum.each(ships_data, fn ship ->
+        Repo.update_all(
+          from(s in Game.Ship, where: s.id == ^ship.id),
+          set: [
+            current_hull: ship.current_hull,
+            status: ship.status,
+            available_at: ship.available_at,
+            updated_at: DateTime.utc_now()
+          ]
+        )
+
+        # Модули — удаляем старые, вставляем актуальные
+        Repo.delete_all(from i in ShipModuleInstallation, where: i.ship_id == ^ship.id)
+
+        Enum.each(Enum.with_index(ship.installed_modules), fn {module_id, slot_index} ->
+          Repo.insert!(%ShipModuleInstallation{
+            ship_id: ship.id,
+            module_id: module_id,
+            slot_index: slot_index
+          })
+        end)
+      end)
+    end)
+    |> case do
+      {:ok, _} -> :ok
+      {:error, r} -> {:error, r}
+    end
+  end
+
   # def set_ship_on_mission(ship_id) do
   #   Repo.update_all(
   #     from(s in Game.Ship, where: s.id == ^ship_id),
@@ -174,14 +244,14 @@ defmodule Bulkhead.Station.Store do
         level: 1
       })
 
-      # Стартовый корабль
-      Repo.insert!(%Game.Ship{
-        guild_id: guild_id,
-        name: "Ranger-01",
-        type: "scout",
-        stats: %{"speed" => 15, "cargo" => 30, "hull_max" => 80},
-        current_hull: 80
-      })
+      # # Стартовый корабль
+      # Repo.insert!(%Game.Ship{
+      #   guild_id: guild_id,
+      #   name: "Ranger-01",
+      #   type: "scout",
+      #   stats: %{"speed" => 15, "cargo" => 30, "hull_max" => 80},
+      #   current_hull: 80.0
+      # })
 
       station
     end)

@@ -9,6 +9,7 @@ defmodule Bulkhead.Repo.Migrations.CreateStationTable do
       timestamps()
     end
 
-    create index(:stations, [], using: :gin, name: :stations_resources_gin)
+    # create index(:stations, [], using: :gin, name: :stations_resources_gin)
+    create index(:stations, [:resources], using: :gin)
   end
 end

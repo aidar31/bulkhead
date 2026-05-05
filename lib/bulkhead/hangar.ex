@@ -4,45 +4,37 @@ defmodule Bulkhead.Hangar do
 
   alias Bulkhead.Station.Store
 
-  # Public API
+  # --- Public API ---
+
   def start_link(args) do
     guild_id = Keyword.fetch!(args, :guild_id)
     GenServer.start_link(__MODULE__, args, name: via(guild_id))
   end
 
-  def get_info(guild_id) do
-    GenServer.call(via(guild_id), :get_info)
-  end
+  def get_info(guild_id), do: GenServer.call(via(guild_id), :get_info)
+  def get_available_ships(guild_id), do: GenServer.call(via(guild_id), :get_available_ships)
 
-  def get_available_ships(guild_id) do
-    GenServer.call(via(guild_id), :get_available_ships)
-  end
+  def get_player_ships(guild_id, user_id),
+    do: GenServer.call(via(guild_id), {:get_player_ships, user_id})
 
-  def get_player_ships(guild_id, user_id) do
-    GenServer.call(via(guild_id), {:get_player_ships, user_id})
-  end
+  def set_ship_on_mission(guild_id, ship_id),
+    do: GenServer.call(via(guild_id), {:set_on_mission, ship_id})
 
-  def set_ship_on_mission(guild_id, ship_id) do
-    GenServer.call(via(guild_id), {:set_on_mission, ship_id})
-  end
+  def install_module(guild_id, ship_id, mod_id, uid),
+    do: GenServer.call(via(guild_id), {:install_module, ship_id, mod_id, uid})
 
-  def start_recovery(guild_id, ship_id) do
-    GenServer.cast(via(guild_id), {:start_recovery, ship_id})
-  end
+  def uninstall_module(guild_id, ship_id, mod_id, uid),
+    do: GenServer.call(via(guild_id), {:uninstall_module, ship_id, mod_id, uid})
 
-  def install_module(guild_id, ship_id, module_id, user_id) do
-    GenServer.call(via(guild_id), {:install_module, ship_id, module_id, user_id})
-  end
+  def start_recovery(guild_id, ship_id),
+    do: GenServer.cast(via(guild_id), {:start_recovery, ship_id})
 
-  def uninstall_module(guild_id, ship_id, module_id, user_id) do
-    GenServer.call(via(guild_id), {:uninstall_module, ship_id, module_id, user_id})
-  end
+  def update_ship_hull(guild_id, ship_id, new_hull),
+    do: GenServer.cast(via(guild_id), {:update_hull, ship_id, new_hull})
 
-  def update_ship_hull(guild_id, ship_id, new_hull) do
-    GenServer.cast(via(guild_id), {:update_hull, ship_id, new_hull})
-  end
+  def add_ship(guild_id, ship), do: GenServer.cast(via(guild_id), {:add_ship, ship})
 
-  # Callbacks
+  # --- Callbacks ---
 
   def init(args) do
     guild_id = Keyword.fetch!(args, :guild_id)
@@ -51,6 +43,9 @@ defmodule Bulkhead.Hangar do
       guild_id: guild_id,
       level: 1,
       ships: %{},
+      # hull_dirty: корабли с изменённым хуллом, которые надо сохранить при persist
+      hull_dirty: MapSet.new(),
+      # dirty: уровень ангара изменился и надо сохранить
       dirty: false,
       loaded: false
     }
@@ -64,6 +59,7 @@ defmodule Bulkhead.Hangar do
     ships =
       Store.get_all_ships(state.guild_id)
       |> Enum.map(fn ship ->
+        # Корабли в мисии при краше возвращаем в idle (миссия могла не завершиться)
         case ship.status do
           "on_mission" -> %{ship | status: "idle"}
           _ -> ship
@@ -72,56 +68,36 @@ defmodule Bulkhead.Hangar do
       |> index_by_id()
 
     Enum.each(ships, fn {id, ship} ->
-      if ship.status == "recovering" do
-        schedule_recovery_check(id, ship.available_at)
-      end
+      if ship.status == "recovering", do: schedule_recovery_check(id, ship.available_at)
     end)
 
     schedule_persist()
 
-    new_state = %{state | level: building.level, ships: ships, loaded: true}
-
-    {:noreply, new_state}
+    {:noreply, %{state | level: building.level, ships: ships, loaded: true}}
   end
 
-  def handle_cast({:update_hull, ship_id, new_hull}, state) do
-    Store.update_ship_hull(ship_id, new_hull)
+  # --- Calls ---
 
-    new_ships =
-      Map.update!(state.ships, ship_id, fn ship ->
-        %{ship | current_hull: new_hull}
-      end)
+  def handle_call(:get_info, _from, %{loaded: false} = state),
+    do: {:reply, :loading, state}
 
-    {:noreply, %{state | ships: new_ships}}
-  end
-
-  def handle_call(:get_info, _from, %{loaded: false} = state) do
-    {:reply, :loading, state}
-  end
-
-  def handle_call(:get_info, _from, state) do
-    {:reply, %{level: state.level, ships: Map.values(state.ships)}, state}
-  end
+  def handle_call(:get_info, _from, state),
+    do: {:reply, %{level: state.level, ships: Map.values(state.ships)}, state}
 
   def handle_call(:get_available_ships, _from, state) do
-    available = Enum.filter(Map.values(state.ships), &(&1.status == "idle"))
+    available = state.ships |> Map.values() |> Enum.filter(&(&1.status == "idle"))
     {:reply, available, state}
   end
 
   def handle_call({:get_player_ships, user_id}, _from, state) do
-    player_ships =
-      state.ships
-      |> Map.values()
-      |> Enum.filter(&(&1.user_id == user_id))
-
-    {:reply, player_ships, state}
+    ships = state.ships |> Map.values() |> Enum.filter(&(&1.user_id == user_id))
+    {:reply, ships, state}
   end
 
   def handle_call({:set_on_mission, ship_id}, _from, state) do
     case Map.get(state.ships, ship_id) do
       %{status: "idle"} = ship ->
         new_ship = %{ship | status: "on_mission"}
-
         new_ships = Map.put(state.ships, ship_id, new_ship)
         {:reply, :ok, %{state | ships: new_ships}}
 
@@ -130,68 +106,102 @@ defmodule Bulkhead.Hangar do
     end
   end
 
+  # install_module: всё валидируем по данным в state, только 1 запрос к БД
   def handle_call({:install_module, ship_id, module_id, user_id}, _from, state) do
+    ship = Map.get(state.ships, ship_id)
+
+    with true <-
+           RoleServer.can?(state.guild_id, user_id, :can_manage_modules) ||
+             {:error, :no_engineer_role},
+         :ok <- check_ship_owner(ship, user_id),
+         :ok <- check_ship_idle(ship),
+         # считаем по installed_modules в state
+         :ok <- check_slots_available(ship),
+         {:ok, mod_def} <- get_module_def(module_id),
+         # по state
+         :ok <- check_category_unique(ship, mod_def.category) do
+      slot_index = next_free_slot(ship)
+
+      # Единственный DB-запрос — сохранить инсталляцию
+      # {:ok, _} = Store.install_module(ship_id, module_id, slot_index)
+
+      # Обновляем ship в памяти, применяем эффекты модулей
+      new_ship = apply_new_module(ship, mod_def, slot_index)
+
+      # Персистим обновлённые stats в кораблей (без вызова Repo напрямую)
+      # Store.update_ship_stats(ship_id, new_ship.stats)
+
+      new_ships = Map.put(state.ships, ship_id, new_ship)
+      {:reply, {:ok, new_ship}, %{state | ships: new_ships, dirty: true}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  # uninstall_module: был объявлен в API, но handle_call отсутствовал → timeout
+  def handle_call({:uninstall_module, ship_id, module_id, user_id}, _from, state) do
     ship = Map.get(state.ships, ship_id)
 
     with :ok <- check_ship_owner(ship, user_id),
          :ok <- check_ship_idle(ship),
-         :ok <- check_slots_available(ship),
-         {:ok, mod_def} <- get_module_def(module_id),
-         :ok <- check_category_unique(ship, mod_def.category, state) do
-      slot_index = next_free_slot(ship)
+         :ok <- check_module_installed(ship, module_id) do
+      # :ok = Store.uninstall_module(ship_id, module_id)
 
-      {:ok, _} = Bulkhead.Station.Store.install_module(ship_id, module_id, slot_index)
-      new_ship = reload_ship_with_modules(ship_id)
-
-      Bulkhead.Repo.get!(Bulkhead.Game.Ship, ship_id)
-      |> Bulkhead.Game.Ship.changeset(%{stats: new_ship.stats})
-      |> Bulkhead.Repo.update!()
+      new_ship = remove_module_and_recalc(ship, module_id)
+      Store.update_ship_stats(ship_id, new_ship.stats)
 
       new_ships = Map.put(state.ships, ship_id, new_ship)
-
       {:reply, {:ok, new_ship}, %{state | ships: new_ships}}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
+  # --- Casts ---
+  def handle_cast({:add_ship, ship}, state) do
+    new_ships = Map.put(state.ships, ship.id, ship)
+    {:noreply, %{state | ships: new_ships}}
+  end
+
+  # update_hull: только помечаем dirty в state, flush при persist — не бьём БД на каждый урон
+  def handle_cast({:update_hull, ship_id, new_hull}, state) do
+    new_ships = Map.update!(state.ships, ship_id, &%{&1 | current_hull: new_hull})
+    hull_dirty = MapSet.put(state.hull_dirty, ship_id)
+    {:noreply, %{state | ships: new_ships, hull_dirty: hull_dirty}}
+  end
+
   def handle_cast({:start_recovery, ship_id}, state) do
-    # Расчет времени: 5 минут (300с) база / уровень ангара
     duration_sec = trunc(300 / state.level)
     available_at = DateTime.add(DateTime.utc_now(), duration_sec, :second)
 
-    # Обновляем БД (чтобы после краша мы знали, когда корабль выйдет)
     Store.set_ship_recovering(ship_id, available_at)
 
     new_ships =
-      Map.update!(state.ships, ship_id, fn s ->
-        %{s | status: "recovering", available_at: available_at}
-      end)
+      Map.update!(state.ships, ship_id, &%{&1 | status: "recovering", available_at: available_at})
 
     schedule_recovery_check(ship_id, available_at)
-
     {:noreply, %{state | ships: new_ships}}
   end
 
   def handle_cast({:release_ship, ship_id}, state) do
-    new_ships =
-      Map.update!(state.ships, ship_id, fn ship ->
-        %{ship | status: "idle"}
-      end)
-
+    new_ships = Map.update!(state.ships, ship_id, &%{&1 | status: "idle"})
     {:noreply, %{state | ships: new_ships}}
   end
+
+  # --- Info ---
 
   def handle_info({:recovery_complete, ship_id}, state) do
     case Map.get(state.ships, ship_id) do
       %{status: "recovering"} = ship ->
-        new_ship = reload_ship_with_modules(ship_id)
-        max_hull = Map.get(new_ship.stats, "hull_max", 100)
+        max_hull = Map.get(ship.stats, "hull_max", 100)
 
         Store.set_ship_idle(ship_id)
         Store.update_ship_hull(ship_id, max_hull)
 
-        new_ship = %{new_ship | status: "idle", available_at: nil, current_hull: max_hull}
+        # Переприменяем модули (уже в state) — без лишнего DB-запроса
+        new_ship =
+          %{ship | status: "idle", available_at: nil, current_hull: max_hull}
+          |> recalc_stats()
 
         broadcast_ready(state.guild_id, ship)
         {:noreply, %{state | ships: Map.put(state.ships, ship_id, new_ship)}}
@@ -201,80 +211,107 @@ defmodule Bulkhead.Hangar do
     end
   end
 
-  def handle_info(:persist, state) do
-    # Тут можно сохранять уровень ангара, если он поменялся
-    # Store.save_building(state.guild_id, "hangar", state.level)
+  # Persist по таймеру — полный snapshot всех кораблей
+  def handle_info(:persist, %{dirty: false} = state) do
     schedule_persist()
-    {:noreply, %{state | dirty: false}}
+    {:noreply, state}
   end
 
-  # Guards
+  def handle_info(:persist, %{dirty: true} = state) do
+    snapshot = build_snapshot(state)
+    parent = self()
+
+    Task.start(fn ->
+      result = Store.save_hangar_snapshot(snapshot)
+      send(parent, {:persist_done, result})
+    end)
+
+    schedule_persist()
+    # dirty: true пока не придёт :persist_done
+    {:noreply, state}
+  end
+
+  def handle_info({:persist_done, :ok}, state),
+    do: {:noreply, %{state | dirty: false}}
+
+  def handle_info({:persist_done, {:error, reason}}, state) do
+    Logger.error("Hangar persist failed for #{state.guild_id}: #{inspect(reason)}")
+    {:noreply, state}
+  end
+
+  # --- Guards ---
+
   defp check_ship_owner(%{user_id: uid}, user_id) when uid == user_id, do: :ok
   defp check_ship_owner(_, _), do: {:error, :not_your_ship}
 
   defp check_ship_idle(%{status: "idle"}), do: :ok
   defp check_ship_idle(_), do: {:error, :ship_not_idle}
 
-  defp check_slots_available(%{slots_total: total, id: ship_id}) do
-    used = Bulkhead.Station.Store.count_modules(ship_id)
-    if used < total, do: :ok, else: {:error, :no_slots_available}
+  # Считаем слоты по installed_modules в state — без запроса к БД
+  defp check_slots_available(%{slots_total: total, installed_modules: mods}),
+    do: if(length(mods) < total, do: :ok, else: {:error, :no_slots_available})
+
+  # Проверяем категорию по state — без запроса к БД
+  defp check_category_unique(%{installed_modules: mods}, category) do
+    if Enum.any?(mods, &(&1.category == category)),
+      do: {:error, :category_already_installed},
+      else: :ok
   end
 
-  defp check_category_unique(ship, category, state) do
-    installed = Bulkhead.Station.Store.get_ship_modules(ship.id)
-    already_has = Enum.any?(installed, &(&1.category == category))
-    if already_has, do: {:error, :category_already_installed}, else: :ok
+  defp check_module_installed(%{installed_modules: mods}, module_id) do
+    if Enum.any?(mods, &(&1.id == module_id)),
+      do: :ok,
+      else: {:error, :module_not_installed}
   end
 
-  defp next_free_slot(ship) do
-    used_slots =
-      Bulkhead.Station.Store.get_ship_modules(ship.id)
-      |> Enum.map(& &1.slot_index)
-      |> MapSet.new()
-
-    Enum.find(0..(ship.slots_total - 1), &(not MapSet.member?(used_slots, &1)))
+  defp next_free_slot(%{installed_modules: mods, slots_total: total}) do
+    used = MapSet.new(mods, & &1.slot_index)
+    Enum.find(0..(total - 1), &(not MapSet.member?(used, &1)))
   end
 
-  # Helpers
+  # --- Helpers ---
+  defp build_snapshot(state) do
+    ships_data = state.ships |> Map.values() |> Enum.map(&ship_to_persist/1)
+    %{guild_id: state.guild_id, level: state.level, ships: ships_data}
+  end
+
+  # Сохраняем только персистентные поля, не эффективные stats
+  defp ship_to_persist(ship) do
+    %{
+      id: ship.id,
+      status: ship.status,
+      current_hull: ship.current_hull,
+      available_at: ship.available_at,
+      installed_modules: Enum.map(ship.installed_modules, & &1.id)
+    }
+  end
 
   defp get_module_def(module_id) do
-    case Bulkhead.Repo.get(Bulkhead.Game.ShipModuleDefinition, module_id) do
+    case Store.get_module_def(module_id) do
       nil -> {:error, :module_not_found}
       mod -> {:ok, mod}
     end
   end
 
-  defp reload_ship_with_modules(ship_id) do
-    ship = Bulkhead.Repo.get!(Bulkhead.Game.Ship, ship_id)
-
-    installed_modules = Bulkhead.Station.Store.get_ship_modules(ship_id)
-
-    effective_stats = Bulkhead.Game.ModuleEngine.apply_modules(ship.stats, installed_modules)
-
-    %{ship | stats: effective_stats}
+  # Обновляем ship в памяти: добавляем модуль, пересчитываем stats
+  defp apply_new_module(ship, mod_def, slot_index) do
+    mod_with_slot = Map.put(mod_def, :slot_index, slot_index)
+    new_modules = [mod_with_slot | ship.installed_modules]
+    new_stats = Bulkhead.Game.ModuleEngine.apply_modules(ship.base_stats, new_modules)
+    %{ship | installed_modules: new_modules, stats: new_stats}
   end
 
-  # defp get_effective_stats(ship) do
-  #   base_stats = ship.stats
-  #   modules = ship.metadata["equipped_modules"] || []
+  defp remove_module_and_recalc(ship, module_id) do
+    new_modules = Enum.reject(ship.installed_modules, &(&1.id == module_id))
+    new_stats = Bulkhead.Game.ModuleEngine.apply_modules(ship.base_stats, new_modules)
+    %{ship | installed_modules: new_modules, stats: new_stats}
+  end
 
-  #   # Пример того, как модули меняют статы
-  #   Enum.reduce(modules, base_stats, fn module_id, acc ->
-  #     case module_id do
-  #       "heavy_plating" ->
-  #         Map.update(acc, "hull_max", 0, &(&1 + 20))
-
-  #       "overclocked_core" ->
-  #         Map.update(acc, "firepower", 0, &(&1 + 5))
-
-  #       "nanobots" ->
-  #         Map.put(acc, "regen_bonus", 0.02)
-
-  #       _ ->
-  #         acc
-  #     end
-  #   end)
-  # end
+  # Пересчёт stats без изменения модулей (после recovery)
+  defp recalc_stats(ship) do
+    new_stats = Bulkhead.Game.ModuleEngine.apply_modules(ship.base_stats, ship.installed_modules)
+    %{ship | stats: new_stats}
+  end
 
   defp schedule_recovery_check(ship_id, available_at) do
     delay = DateTime.diff(available_at, DateTime.utc_now(), :millisecond)
@@ -282,15 +319,14 @@ defmodule Bulkhead.Hangar do
   end
 
   defp index_by_id(ships), do: Map.new(ships, &{&1.id, &1})
-
   defp via(guild_id), do: {:via, Registry, {Bulkhead.Registry, {:hangar, guild_id}}}
-
   defp schedule_persist(), do: Process.send_after(self(), :persist, 60_000)
 
   defp broadcast_ready(guild_id, ship) do
-    Phoenix.PubSub.broadcast(Bulkhead.PubSub, "station:#{guild_id}", {
-      :ship_ready,
-      %{ship_id: ship.id, ship_name: ship.name}
-    })
+    Phoenix.PubSub.broadcast(
+      Bulkhead.PubSub,
+      "station:#{guild_id}",
+      {:ship_ready, %{ship_id: ship.id, ship_name: ship.name}}
+    )
   end
 end

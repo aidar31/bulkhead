@@ -3,6 +3,8 @@ defmodule Bulkhead.Station do
   require Logger
 
   alias Bulkhead.Hangar
+  alias Bulkhead.RoleServer
+  alias Bulkhead.Game.{RoleDefinition, RoleEngine}
 
   def start_link(args) do
     guild_id = Keyword.fetch!(args, :guild_id)
@@ -36,6 +38,8 @@ defmodule Bulkhead.Station do
   def init(args) do
     guild_id = Keyword.fetch!(args, :guild_id)
 
+    Phoenix.PubSub.subscribe(Bulkhead.PubSub, "station:#{guild_id}:reactor")
+
     state = default_state(guild_id)
 
     schedule_tick()
@@ -49,6 +53,7 @@ defmodule Bulkhead.Station do
     resources = %{
       credits: record.resources["credits"] || 100,
       scrap: record.resources["scrap"] || 50,
+      spice: record.resources["spice"] || 50,
       energy: record.resources["energy"] || 100,
       mining_level: record.resources["mining_level"] || 1
     }
@@ -88,42 +93,43 @@ defmodule Bulkhead.Station do
   end
 
   # Missions
+  # Missions
   def handle_call({:start_mission, args}, _from, state) do
-    case Hangar.get_available_ships(state.guild_id) do
-      [ship | _] ->
-        case Hangar.set_ship_on_mission(state.guild_id, ship.id) do
-          :ok ->
-            mission_args =
-              Map.merge(args, %{
-                ship_id: ship.id,
-                ship_stats: ship.stats,
-                ship_hull: ship.current_hull,
-                station_pid: self()
-              })
+    user_id = args.user_id
 
-            case DynamicSupervisor.start_child(
-                   get_mission_sup(state.guild_id),
-                   {Bulkhead.Mission.Server, mission_args}
-                 ) do
-              {:ok, pid} ->
-                new_state = %{
-                  state
-                  | active_missions: MapSet.put(state.active_missions, pid),
-                    dirty: true
-                }
+    with :ok <- check_reactor_online(state),
+         true <-
+           RoleServer.can?(state.guild_id, user_id, :can_start_missions) ||
+             {:error, :no_pilot_role},
+         :ok <- check_energy_sufficient(state, 20),
+         [ship | _] <- Hangar.get_available_ships(state.guild_id),
+         :ok <- Hangar.set_ship_on_mission(state.guild_id, ship.id),
+         {:ok, pid} <- start_mission_process(state, ship, args) do
+      effects = RoleServer.get_player_effects(state.guild_id, user_id)
+      reward_multiplier = 1.0 + RoleEngine.bonus(effects, :mission_reward_bonus)
 
-                {:reply, {:ok, pid}, new_state}
+      new_state = %{
+        state
+        | active_missions: MapSet.put(state.active_missions, pid),
+          multiplier: reward_multiplier,
+          dirty: true
+      }
 
-              {:error, reason} ->
-                {:reply, {:error, reason}, state}
-            end
+      {:reply, {:ok, pid}, new_state}
+    else
+      {:error, :reactor_offline} ->
+        {:reply, {:error, "⚡ Реактор отключён — подайте Spice!"}, state}
 
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
+      {:error, :low_energy} ->
+        {:reply, {:error, "🔋 Недостаточно энергии для запуска миссии"}, state}
 
+      # Результат Hangar.get_available_ships
       [] ->
         {:reply, {:error, :no_ships_available}, state}
+
+      # Ошибки от set_ship_on_mission или DynamicSupervisor
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -173,6 +179,36 @@ defmodule Bulkhead.Station do
           {:reply, {:error, reason}, state}
       end
     end
+  end
+
+  def handle_info(
+        {:reactor_output,
+         %{
+           spice_consumed: spice,
+           energy_produced: energy,
+           heat_produced: heat,
+           status: reactor_status
+         }},
+        state
+      ) do
+    Logger.info(
+      "⚡ Station #{state.guild_id}: Reactor produced #{energy} energy (consumed #{spice} spice). Heat: #{heat}"
+    )
+
+    new_resources =
+      state.resources
+      |> Map.update(:spice, 0, &max(0, &1 - spice))
+      |> Map.update(:energy, 0, &min(&1 + energy, max_energy(state)))
+
+    # Применяем эффект статуса реактора к зданиям
+    new_state = %{state | resources: new_resources, reactor_status: reactor_status, dirty: true}
+
+    apply_reactor_effects(new_state)
+  end
+
+  def handle_info({:spice_consumed, amount}, state) do
+    new_resources = Map.update(state.resources, :spice, 0, &max(0, &1 - amount))
+    {:noreply, %{state | resources: new_resources, dirty: true}}
   end
 
   # handle_info для кооп-завершения — ships_info теперь список
@@ -271,6 +307,58 @@ defmodule Bulkhead.Station do
 
   # Helpers
 
+  defp max_energy(%{buildings_online: buildings}) do
+    base = 200
+    bonus = if :reactor in buildings, do: 100, else: 0
+    base + bonus
+  end
+
+  defp max_energy(_state), do: 200
+
+  defp check_reactor_online(%{reactor_status: :online}), do: :ok
+  # critical — ещё можно
+  defp check_reactor_online(%{reactor_status: :critical}), do: :ok
+  defp check_reactor_online(_), do: {:error, :reactor_offline}
+
+  defp check_energy_sufficient(%{resources: %{energy: e}}, cost) when e >= cost, do: :ok
+  defp check_energy_sufficient(_, _), do: {:error, :low_energy}
+
+  defp start_mission_process(state, ship, args) do
+    mission_args =
+      Map.merge(args, %{
+        ship_id: ship.id,
+        ship_stats: ship.stats,
+        ship_hull: ship.current_hull,
+        station_pid: self()
+      })
+
+    DynamicSupervisor.start_child(
+      get_mission_sup(state.guild_id),
+      {Bulkhead.Mission.Server, mission_args}
+    )
+  end
+
+  # Реактор отключился — блокируем возможности
+  defp apply_reactor_effects(%{reactor_status: :offline} = state) do
+    # Hangar нельзя использовать без энергии
+    Logger.warning("Station #{state.guild_id}: reactor offline, hangar disabled")
+
+    Phoenix.PubSub.broadcast(
+      Bulkhead.PubSub,
+      "station:#{state.guild_id}",
+      {:station_alert, :reactor_offline}
+    )
+
+    # только лаба без энергии
+    {:noreply, %{state | buildings_online: [:laboratory]}}
+  end
+
+  defp apply_reactor_effects(%{reactor_status: :online} = state) do
+    {:noreply, %{state | buildings_online: [:hangar, :factory, :laboratory, :reactor]}}
+  end
+
+  defp apply_reactor_effects(state), do: {:noreply, state}
+
   defp handle_rewards(state, rewards) do
     new_resources =
       Enum.reduce(rewards, state.resources, fn {resource, amount}, acc ->
@@ -286,7 +374,20 @@ defmodule Bulkhead.Station do
   defp default_state(guild_id) do
     %{
       guild_id: guild_id,
-      resources: %{},
+      resources: %{
+        credits: 100,
+        scrap: 50,
+        # теперь energy производится реактором, не статична
+        energy: 0,
+        # новый ресурс
+        spice: 0,
+        # побочный продукт реактора
+        heat: 0
+      },
+      # ← новое поле
+      reactor_status: :offline,
+      # ← какие здания активны
+      buildings_online: [],
       metadata: %{},
       active_missions: MapSet.new(),
       active_event: nil,

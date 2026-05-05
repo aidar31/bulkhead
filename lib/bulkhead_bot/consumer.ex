@@ -57,6 +57,29 @@ defmodule BulkheadBot.Consumer do
     end
   end
 
+  defp route_command(%Interaction{data: %{name: "role", options: options}} = interaction) do
+    Nostrum.Api.Interaction.create_response(interaction, %{type: 5})
+
+    case options do
+      [%{name: "list"}] ->
+        BulkheadBot.Commands.Role.execute_list(interaction)
+
+      [%{name: "info", options: opts}] ->
+        target = find_option(opts, "user") || interaction.user.id
+        BulkheadBot.Commands.Role.execute_info(interaction, target)
+
+      [%{name: "assign", options: opts}] ->
+        target = find_option(opts, "user")
+        role_id = find_option(opts, "role")
+        BulkheadBot.Commands.Role.execute_assign(interaction, target, role_id)
+
+      [%{name: "remove", options: opts}] ->
+        target = find_option(opts, "user")
+        role_id = find_option(opts, "role")
+        BulkheadBot.Commands.Role.execute_remove(interaction, target, role_id)
+    end
+  end
+
   defp route_command(%Interaction{data: %{name: "raid"}} = interaction) do
     Nostrum.Api.Interaction.create_response(interaction, %{type: 5})
     BulkheadBot.Commands.Raid.execute(interaction)
@@ -93,6 +116,66 @@ defmodule BulkheadBot.Consumer do
       %{
         name: "ping",
         description: "Проверить связь с ботом"
+      },
+      %{
+        name: "role",
+        description: "Управление ролями станции",
+        options: [
+          %{
+            # SUB_COMMAND
+            type: 1,
+            name: "list",
+            description: "Список всех доступных ролей"
+          },
+          %{
+            type: 1,
+            name: "info",
+            description: "Посмотреть роли игрока",
+            options: [
+              %{type: 6, name: "user", description: "Игрок (по умолчанию — вы)", required: false}
+            ]
+          },
+          %{
+            type: 1,
+            name: "assign",
+            description: "Назначить роль игроку",
+            options: [
+              %{type: 6, name: "user", description: "Игрок", required: true},
+              %{
+                type: 3,
+                name: "role",
+                description: "Роль",
+                required: true,
+                choices: [
+                  %{name: "🔧 Инженер", value: "engineer"},
+                  %{name: "🚀 Пилот", value: "pilot"},
+                  %{name: "🔬 Исследователь", value: "researcher"},
+                  %{name: "⭐ Командир", value: "commander"}
+                ]
+              }
+            ]
+          },
+          %{
+            type: 1,
+            name: "remove",
+            description: "Снять роль с игрока",
+            options: [
+              %{type: 6, name: "user", description: "Игрок", required: true},
+              %{
+                type: 3,
+                name: "role",
+                description: "Роль",
+                required: true,
+                choices: [
+                  %{name: "🔧 Инженер", value: "engineer"},
+                  %{name: "🚀 Пилот", value: "pilot"},
+                  %{name: "🔬 Исследователь", value: "researcher"},
+                  %{name: "⭐ Командир", value: "commander"}
+                ]
+              }
+            ]
+          }
+        ]
       },
       %{
         name: "raid",
@@ -135,4 +218,11 @@ defmodule BulkheadBot.Consumer do
   end
 
   defp route_component(_interaction), do: :ok
+
+  defp find_option(opts, name) do
+    case Enum.find(opts, &(&1.name == name)) do
+      %{value: v} -> v
+      nil -> nil
+    end
+  end
 end
