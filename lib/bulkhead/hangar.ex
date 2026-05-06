@@ -32,6 +32,9 @@ defmodule Bulkhead.Hangar do
   def update_ship_hull(guild_id, ship_id, new_hull),
     do: GenServer.cast(via(guild_id), {:update_hull, ship_id, new_hull})
 
+  def ensure_starter_ship(guild_id, user_id),
+    do: GenServer.call(via(guild_id), {:ensure_starter_ship, user_id})
+
   def add_ship(guild_id, ship), do: GenServer.cast(via(guild_id), {:add_ship, ship})
 
   # --- Callbacks ---
@@ -89,9 +92,41 @@ defmodule Bulkhead.Hangar do
     {:reply, available, state}
   end
 
+  # def handle_call({:get_player_ships, user_id}, _from, state) do
+  #   ships = state.ships |> Map.values() |> Enum.filter(&(&1.user_id == user_id))
+  #   {:reply, ships, state}
+  # end
+
   def handle_call({:get_player_ships, user_id}, _from, state) do
+    # 1. Ищем корабли в текущем стейте (в памяти)
     ships = state.ships |> Map.values() |> Enum.filter(&(&1.user_id == user_id))
-    {:reply, ships, state}
+
+    if ships == [] do
+      # 2. Если пусто — создаем стартовый корабль через Store
+      # ВАЖНО: это происходит внутри процесса Ангара, так что консистентность соблюдена
+      case Store.create_starter_ship(state.guild_id, user_id) do
+        {:ok, new_ship} ->
+          # Обогащаем статы (применяем пустые модули, чтобы структура была полной)
+          full_ship = %{
+            new_ship
+            | stats: Bulkhead.Game.ModuleEngine.apply_modules(new_ship.stats, [])
+          }
+
+          # Обновляем стейт, чтобы при следующем вызове не лезть в БД
+          new_state_ships = Map.put(state.ships, full_ship.id, full_ship)
+
+          # Помечаем dirty: true, чтобы сработал автоматический persist (если нужно)
+          # Хотя Store.create_starter_ship уже сделал insert в базу.
+          {:reply, [full_ship], %{state | ships: new_state_ships, dirty: true}}
+
+        {:error, _reason} ->
+          # Если база упала или еще что — возвращаем пустой список
+          {:reply, [], state}
+      end
+    else
+      # 3. Если корабли уже были в памяти — просто отдаем их
+      {:reply, ships, state}
+    end
   end
 
   def handle_call({:set_on_mission, ship_id}, _from, state) do
@@ -111,7 +146,7 @@ defmodule Bulkhead.Hangar do
     ship = Map.get(state.ships, ship_id)
 
     with true <-
-           RoleServer.can?(state.guild_id, user_id, :can_manage_modules) ||
+           Bulkhead.RoleServer.can?(state.guild_id, user_id, :can_manage_modules) ||
              {:error, :no_engineer_role},
          :ok <- check_ship_owner(ship, user_id),
          :ok <- check_ship_idle(ship),
@@ -157,10 +192,27 @@ defmodule Bulkhead.Hangar do
     end
   end
 
+  def handle_call({:ensure_starter_ship, user_id}, _from, state) do
+    user_ships = state.ships |> Map.values() |> Enum.filter(&(&1.user_id == user_id))
+
+    if Enum.empty?(user_ships) do
+      case Store.create_starter_ship(state.guild_id, user_id) do
+        {:ok, new_ship} ->
+          new_ships = Map.put(state.ships, new_ship.id, new_ship)
+          {:reply, [new_ship], %{state | ships: new_ships, dirty: true}}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
+    else
+      {:reply, user_ships, state}
+    end
+  end
+
   # --- Casts ---
   def handle_cast({:add_ship, ship}, state) do
     new_ships = Map.put(state.ships, ship.id, ship)
-    {:noreply, %{state | ships: new_ships}}
+    {:noreply, %{state | ships: new_ships, dirty: true}}
   end
 
   # update_hull: только помечаем dirty в state, flush при persist — не бьём БД на каждый урон

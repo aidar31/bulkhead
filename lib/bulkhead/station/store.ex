@@ -80,10 +80,10 @@ defmodule Bulkhead.Station.Store do
       guild_id: guild_id,
       user_id: user_id,
       name: "Новичок-1",
-      class: "scout",
+      type: "scout",
       status: "idle",
-      # Даем 3 слота под твои новые модули
       slots_total: 3,
+      current_hull: 100.0,
       stats: %{
         "hull_max" => 100,
         "speed" => 10,

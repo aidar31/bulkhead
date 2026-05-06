@@ -18,14 +18,20 @@ defmodule BulkheadBot.Commands.Hangar do
           Api.Interaction.edit_response(interaction, %{content: "⏳ Загрузка..."})
 
         [] ->
+          # Если вернулся [], значит либо Hangar не создал корабль, либо Store упал
+          Logger.error(
+            "Hangar returned EMPTY list for user #{target_user.id} in guild #{guild_id}"
+          )
+
           content =
             if target_user.id == interaction.user.id,
-              do: "❌ У вас пока нет кораблей.",
+              do: "❌ Не удалось инициализировать ваш ангар. Обратитесь к админу.",
               else: "❌ У пользователя <@#{target_user.id}> нет кораблей."
 
           Api.Interaction.edit_response(interaction, %{content: content})
 
         ships ->
+          # Всегда рендерим список
           embed = %{
             title: "🏗️ Ангар: #{target_user.username}",
             description: "Список личных кораблей в этом секторе.",

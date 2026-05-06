@@ -173,7 +173,8 @@ defmodule Bulkhead.Mission.Server do
   defp finish_mission(state, rewards) do
     boosted_rewards =
       Enum.map(rewards, fn {resource, amount} ->
-        {resource, RoleEngine.apply_bonus(amount, state.role_effects, :mission_reward_bonus)}
+        {resource,
+         Bulkhead.RoleEngine.apply_bonus(amount, state.role_effects, :mission_reward_bonus)}
       end)
 
     # Собираем все ship_id из участников миссии
